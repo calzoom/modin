@@ -12,9 +12,10 @@ except:
 import modin.pandas as pd
 
 #%%
-df = pd.read_csv("Team_Records.csv")
+df = pd.read_csv("crime_data.csv")
 
+# import modin.pandas as pd
 #%%
-teams = df.groupby('Team').mean()
+df.groupby('Crime Code Description').size()
 
 

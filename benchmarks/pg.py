@@ -6,15 +6,15 @@ try:
 except:
 	pass
 #%% [markdown]
-# # Modin Implementation of pandas.dataframe.groupby
 
 #%%
-import modin.pandas as pd
+import pandas as pd
 
 #%%
 df = pd.read_csv("Team_Records.csv")
 
 #%%
 teams = df.groupby('Team').mean()
+
 
 

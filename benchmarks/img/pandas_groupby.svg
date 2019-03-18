@@ -1,0 +1,3957 @@
+<?xml version="1.0" standalone="no"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<svg version="1.1" width="1200" height="1638" onload="init(evt)" viewBox="0 0 1200 1638" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+<!-- Flame graph stack visualization. See https://github.com/brendangregg/FlameGraph for latest version, and http://www.brendangregg.com/flamegraphs.html for examples. -->
+<!-- NOTES:  -->
+<defs>
+	<linearGradient id="background" y1="0" y2="1" x1="0" x2="0" >
+		<stop stop-color="#eeeeee" offset="5%" />
+		<stop stop-color="#eeeeb0" offset="95%" />
+	</linearGradient>
+</defs>
+<style type="text/css">
+	text { font-family:Verdana; font-size:12px; fill:rgb(0,0,0); }
+	#search { opacity:0.1; cursor:pointer; }
+	#search:hover, #search.show { opacity:1; }
+	#subtitle { text-anchor:middle; font-color:rgb(160,160,160); }
+	#title { text-anchor:middle; font-size:17px}
+	#unzoom { cursor:pointer; }
+	#frames > *:hover { stroke:black; stroke-width:0.5; cursor:pointer; }
+	.hide { display:none; }
+	.parent { opacity:0.5; }
+</style>
+<script type="text/ecmascript">
+<![CDATA[
+	"use strict";
+	var details, searchbtn, unzoombtn, matchedtxt, svg, searching;
+	function init(evt) {
+		details = document.getElementById("details").firstChild;
+		searchbtn = document.getElementById("search");
+		unzoombtn = document.getElementById("unzoom");
+		matchedtxt = document.getElementById("matched");
+		svg = document.getElementsByTagName("svg")[0];
+		searching = 0;
+	}
+
+	window.addEventListener("click", function(e) {
+		var target = find_group(e.target);
+		if (target) {
+			if (target.nodeName == "a") {
+				if (e.ctrlKey === false) return;
+				e.preventDefault();
+			}
+			if (target.classList.contains("parent")) unzoom();
+			zoom(target);
+		}
+		else if (e.target.id == "unzoom") unzoom();
+		else if (e.target.id == "search") search_prompt();
+	}, false)
+
+	// mouse-over for info
+	// show
+	window.addEventListener("mouseover", function(e) {
+		var target = find_group(e.target);
+		if (target) details.nodeValue = "Function: " + g_to_text(target);
+	}, false)
+
+	// clear
+	window.addEventListener("mouseout", function(e) {
+		var target = find_group(e.target);
+		if (target) details.nodeValue = ' ';
+	}, false)
+
+	// ctrl-F for search
+	window.addEventListener("keydown",function (e) {
+		if (e.keyCode === 114 || (e.ctrlKey && e.keyCode === 70)) {
+			e.preventDefault();
+			search_prompt();
+		}
+	}, false)
+
+	// functions
+	function find_child(node, selector) {
+		var children = node.querySelectorAll(selector);
+		if (children.length) return children[0];
+		return;
+	}
+	function find_group(node) {
+		var parent = node.parentElement;
+		if (!parent) return;
+		if (parent.id == "frames") return node;
+		return find_group(parent);
+	}
+	function orig_save(e, attr, val) {
+		if (e.attributes["_orig_" + attr] != undefined) return;
+		if (e.attributes[attr] == undefined) return;
+		if (val == undefined) val = e.attributes[attr].value;
+		e.setAttribute("_orig_" + attr, val);
+	}
+	function orig_load(e, attr) {
+		if (e.attributes["_orig_"+attr] == undefined) return;
+		e.attributes[attr].value = e.attributes["_orig_" + attr].value;
+		e.removeAttribute("_orig_"+attr);
+	}
+	function g_to_text(e) {
+		var text = find_child(e, "title").firstChild.nodeValue;
+		return (text)
+	}
+	function g_to_func(e) {
+		var func = g_to_text(e);
+		// if there's any manipulation we want to do to the function
+		// name before it's searched, do it here before returning.
+		return (func);
+	}
+	function update_text(e) {
+		var r = find_child(e, "rect");
+		var t = find_child(e, "text");
+		var w = parseFloat(r.attributes.width.value) -3;
+		var txt = find_child(e, "title").textContent.replace(/\([^(]*\)$/,"");
+		t.attributes.x.value = parseFloat(r.attributes.x.value) + 3;
+
+		// Smaller than this size won't fit anything
+		if (w < 2 * 12 * 0.59) {
+			t.textContent = "";
+			return;
+		}
+
+		t.textContent = txt;
+		// Fit in full text width
+		if (/^ *$/.test(txt) || t.getSubStringLength(0, txt.length) < w)
+			return;
+
+		for (var x = txt.length - 2; x > 0; x--) {
+			if (t.getSubStringLength(0, x + 2) <= w) {
+				t.textContent = txt.substring(0, x) + "..";
+				return;
+			}
+		}
+		t.textContent = "";
+	}
+
+	// zoom
+	function zoom_reset(e) {
+		if (e.attributes != undefined) {
+			orig_load(e, "x");
+			orig_load(e, "width");
+		}
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_reset(c[i]);
+		}
+	}
+	function zoom_child(e, x, ratio) {
+		if (e.attributes != undefined) {
+			if (e.attributes.x != undefined) {
+				orig_save(e, "x");
+				e.attributes.x.value = (parseFloat(e.attributes.x.value) - x - 10) * ratio + 10;
+				if (e.tagName == "text")
+					e.attributes.x.value = find_child(e.parentNode, "rect[x]").attributes.x.value + 3;
+			}
+			if (e.attributes.width != undefined) {
+				orig_save(e, "width");
+				e.attributes.width.value = parseFloat(e.attributes.width.value) * ratio;
+			}
+		}
+
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_child(c[i], x - 10, ratio);
+		}
+	}
+	function zoom_parent(e) {
+		if (e.attributes) {
+			if (e.attributes.x != undefined) {
+				orig_save(e, "x");
+				e.attributes.x.value = 10;
+			}
+			if (e.attributes.width != undefined) {
+				orig_save(e, "width");
+				e.attributes.width.value = parseInt(svg.width.baseVal.value) - (10 * 2);
+			}
+		}
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_parent(c[i]);
+		}
+	}
+	function zoom(node) {
+		var attr = find_child(node, "rect").attributes;
+		var width = parseFloat(attr.width.value);
+		var xmin = parseFloat(attr.x.value);
+		var xmax = parseFloat(xmin + width);
+		var ymin = parseFloat(attr.y.value);
+		var ratio = (svg.width.baseVal.value - 2 * 10) / width;
+
+		// XXX: Workaround for JavaScript float issues (fix me)
+		var fudge = 0.0001;
+
+		unzoombtn.classList.remove("hide");
+
+		var el = document.getElementById("frames").children;
+		for (var i = 0; i < el.length; i++) {
+			var e = el[i];
+			var a = find_child(e, "rect").attributes;
+			var ex = parseFloat(a.x.value);
+			var ew = parseFloat(a.width.value);
+			var upstack;
+			// Is it an ancestor
+			if (0 == 0) {
+				upstack = parseFloat(a.y.value) > ymin;
+			} else {
+				upstack = parseFloat(a.y.value) < ymin;
+			}
+			if (upstack) {
+				// Direct ancestor
+				if (ex <= xmin && (ex+ew+fudge) >= xmax) {
+					e.classList.add("parent");
+					zoom_parent(e);
+					update_text(e);
+				}
+				// not in current path
+				else
+					e.classList.add("hide");
+			}
+			// Children maybe
+			else {
+				// no common path
+				if (ex < xmin || ex + fudge >= xmax) {
+					e.classList.add("hide");
+				}
+				else {
+					zoom_child(e, xmin, ratio);
+					update_text(e);
+				}
+			}
+		}
+	}
+	function unzoom() {
+		unzoombtn.classList.add("hide");
+		var el = document.getElementById("frames").children;
+		for(var i = 0; i < el.length; i++) {
+			el[i].classList.remove("parent");
+			el[i].classList.remove("hide");
+			zoom_reset(el[i]);
+			update_text(el[i]);
+		}
+	}
+
+	// search
+	function reset_search() {
+		var el = document.querySelectorAll("#frames rect");
+		for (var i = 0; i < el.length; i++) {
+			orig_load(el[i], "fill")
+		}
+	}
+	function search_prompt() {
+		if (!searching) {
+			var term = prompt("Enter a search term (regexp " +
+			    "allowed, eg: ^ext4_)", "");
+			if (term != null) {
+				search(term)
+			}
+		} else {
+			reset_search();
+			searching = 0;
+			searchbtn.classList.remove("show");
+			searchbtn.firstChild.nodeValue = "Search"
+			matchedtxt.classList.add("hide");
+			matchedtxt.firstChild.nodeValue = ""
+		}
+	}
+	function search(term) {
+		var re = new RegExp(term);
+		var el = document.getElementById("frames").children;
+		var matches = new Object();
+		var maxwidth = 0;
+		for (var i = 0; i < el.length; i++) {
+			var e = el[i];
+			var func = g_to_func(e);
+			var rect = find_child(e, "rect");
+			if (func == null || rect == null)
+				continue;
+
+			// Save max width. Only works as we have a root frame
+			var w = parseFloat(rect.attributes.width.value);
+			if (w > maxwidth)
+				maxwidth = w;
+
+			if (func.match(re)) {
+				// highlight
+				var x = parseFloat(rect.attributes.x.value);
+				orig_save(rect, "fill");
+				rect.attributes.fill.value = "rgb(230,0,230)";
+
+				// remember matches
+				if (matches[x] == undefined) {
+					matches[x] = w;
+				} else {
+					if (w > matches[x]) {
+						// overwrite with parent
+						matches[x] = w;
+					}
+				}
+				searching = 1;
+			}
+		}
+		if (!searching)
+			return;
+
+		searchbtn.classList.add("show");
+		searchbtn.firstChild.nodeValue = "Reset Search";
+
+		// calculate percent matched, excluding vertical overlap
+		var count = 0;
+		var lastx = -1;
+		var lastw = 0;
+		var keys = Array();
+		for (k in matches) {
+			if (matches.hasOwnProperty(k))
+				keys.push(k);
+		}
+		// sort the matched frames by their x location
+		// ascending, then width descending
+		keys.sort(function(a, b){
+			return a - b;
+		});
+		// Step through frames saving only the biggest bottom-up frames
+		// thanks to the sort order. This relies on the tree property
+		// where children are always smaller than their parents.
+		var fudge = 0.0001;	// JavaScript floating point
+		for (var k in keys) {
+			var x = parseFloat(keys[k]);
+			var w = matches[keys[k]];
+			if (x >= lastx + lastw - fudge) {
+				count += w;
+				lastx = x;
+				lastw = w;
+			}
+		}
+		// display matched percent
+		matchedtxt.classList.remove("hide");
+		var pct = 100 * count / maxwidth;
+		if (pct != 100) pct = pct.toFixed(1)
+		matchedtxt.firstChild.nodeValue = "Matched: " + pct + "%";
+	}
+]]>
+</script>
+<rect x="0.0" y="0" width="1200.0" height="1638.0" fill="url(#background)"  />
+<text id="title" x="600.00" y="24" >Flame Graph</text>
+<text id="details" x="10.00" y="1621" > </text>
+<text id="unzoom" x="10.00" y="24" class="hide">Reset Zoom</text>
+<text id="search" x="1090.00" y="24" >Search</text>
+<text id="matched" x="1090.00" y="1621" > </text>
+<g id="frames">
+<g >
+<title>MainThread`_load_unlocked (8 samples, 6.84%)</title><rect x="272.2" y="853" width="80.7" height="15.0" fill="rgb(242,23,15)" rx="2" ry="2" />
+<text  x="275.22" y="863.5" >MainThrea..</text>
+</g>
+<g >
+<title>MainThread`dyld_find (1 samples, 0.85%)</title><rect x="1159.7" y="1205" width="10.1" height="15.0" fill="rgb(210,87,14)" rx="2" ry="2" />
+<text  x="1162.74" y="1215.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_and_load_unlocked (3 samples, 2.56%)</title><rect x="897.5" y="597" width="30.3" height="15.0" fill="rgb(212,70,2)" rx="2" ry="2" />
+<text  x="900.52" y="607.5" >Ma..</text>
+</g>
+<g >
+<title>MainThread`&lt;module&gt; (4 samples, 3.42%)</title><rect x="998.4" y="741" width="40.3" height="15.0" fill="rgb(239,93,20)" rx="2" ry="2" />
+<text  x="1001.38" y="751.5" >Mai..</text>
+</g>
+<g >
+<title>MainThread`find_spec (1 samples, 0.85%)</title><rect x="80.6" y="709" width="10.1" height="15.0" fill="rgb(228,202,17)" rx="2" ry="2" />
+<text  x="83.60" y="719.5" ></text>
+</g>
+<g >
+<title>MainThread`_load_unlocked (8 samples, 6.84%)</title><rect x="272.2" y="757" width="80.7" height="15.0" fill="rgb(246,216,26)" rx="2" ry="2" />
+<text  x="275.22" y="767.5" >MainThrea..</text>
+</g>
+<g >
+<title>MainThread`_get_spec (1 samples, 0.85%)</title><rect x="312.6" y="229" width="10.0" height="15.0" fill="rgb(243,82,31)" rx="2" ry="2" />
+<text  x="315.56" y="239.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_and_load_unlocked (1 samples, 0.85%)</title><rect x="312.6" y="277" width="10.0" height="15.0" fill="rgb(217,39,12)" rx="2" ry="2" />
+<text  x="315.56" y="287.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_and_load (1 samples, 0.85%)</title><rect x="373.1" y="645" width="10.1" height="15.0" fill="rgb(245,18,25)" rx="2" ry="2" />
+<text  x="376.08" y="655.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_and_load (1 samples, 0.85%)</title><rect x="917.7" y="485" width="10.1" height="15.0" fill="rgb(241,85,12)" rx="2" ry="2" />
+<text  x="920.69" y="495.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_and_load_unlocked (2 samples, 1.71%)</title><rect x="1008.5" y="613" width="20.1" height="15.0" fill="rgb(238,148,2)" rx="2" ry="2" />
+<text  x="1011.46" y="623.5" ></text>
+</g>
+<g >
+<title>MainThread`_load_unlocked (3 samples, 2.56%)</title><rect x="897.5" y="581" width="30.3" height="15.0" fill="rgb(208,222,46)" rx="2" ry="2" />
+<text  x="900.52" y="591.5" >Ma..</text>
+</g>
+<g >
+<title>MainThread`create_module (1 samples, 0.85%)</title><rect x="403.3" y="933" width="10.1" height="15.0" fill="rgb(226,127,29)" rx="2" ry="2" />
+<text  x="406.33" y="943.5" ></text>
+</g>
+<g >
+<title>MainThread`_get_spec (1 samples, 0.85%)</title><rect x="1028.6" y="341" width="10.1" height="15.0" fill="rgb(220,160,46)" rx="2" ry="2" />
+<text  x="1031.63" y="351.5" ></text>
+</g>
+<g >
+<title>MainThread`find_spec (3 samples, 2.56%)</title><rect x="463.8" y="1045" width="30.3" height="15.0" fill="rgb(249,96,30)" rx="2" ry="2" />
+<text  x="466.85" y="1055.5" >Ma..</text>
+</g>
+<g >
+<title>MainThread`get_code (1 samples, 0.85%)</title><rect x="393.2" y="773" width="10.1" height="15.0" fill="rgb(221,77,36)" rx="2" ry="2" />
+<text  x="396.25" y="783.5" ></text>
+</g>
+<g >
+<title>MainThread`&lt;module&gt; (19 samples, 16.24%)</title><rect x="242.0" y="1141" width="191.6" height="15.0" fill="rgb(253,46,25)" rx="2" ry="2" />
+<text  x="244.97" y="1151.5" >MainThread`&lt;module&gt;</text>
+</g>
+<g >
+<title>MainThread`_find_and_load_unlocked (22 samples, 18.80%)</title><rect x="867.3" y="1077" width="221.8" height="15.0" fill="rgb(240,65,9)" rx="2" ry="2" />
+<text  x="870.26" y="1087.5" >MainThread`_find_and_load_unl..</text>
+</g>
+<g >
+<title>MainThread`_call_with_frames_removed (1 samples, 0.85%)</title><rect x="786.6" y="1109" width="10.1" height="15.0" fill="rgb(245,131,45)" rx="2" ry="2" />
+<text  x="789.58" y="1119.5" ></text>
+</g>
+<g >
+<title>MainThread`_get_spec (1 samples, 0.85%)</title><rect x="504.2" y="869" width="10.1" height="15.0" fill="rgb(251,27,27)" rx="2" ry="2" />
+<text  x="507.19" y="879.5" ></text>
+</g>
+<g >
+<title>MainThread`find_spec (1 samples, 0.85%)</title><rect x="262.1" y="837" width="10.1" height="15.0" fill="rgb(205,90,7)" rx="2" ry="2" />
+<text  x="265.14" y="847.5" ></text>
+</g>
+<g >
+<title>MainThread`_call_with_frames_removed (3 samples, 2.56%)</title><rect x="70.5" y="1013" width="30.3" height="15.0" fill="rgb(215,168,45)" rx="2" ry="2" />
+<text  x="73.51" y="1023.5" >Ma..</text>
+</g>
+<g >
+<title>MainThread`_path_importer_cache (2 samples, 1.71%)</title><rect x="20.1" y="1189" width="20.2" height="15.0" fill="rgb(245,108,42)" rx="2" ry="2" />
+<text  x="23.09" y="1199.5" ></text>
+</g>
+<g >
+<title>MainThread`_get_spec (2 samples, 1.71%)</title><rect x="978.2" y="757" width="20.2" height="15.0" fill="rgb(244,140,39)" rx="2" ry="2" />
+<text  x="981.21" y="767.5" ></text>
+</g>
+<g >
+<title>MainThread`_lazy (26 samples, 22.22%)</title><rect x="514.3" y="741" width="262.2" height="15.0" fill="rgb(236,0,52)" rx="2" ry="2" />
+<text  x="517.27" y="751.5" >MainThread`_lazy</text>
+</g>
+<g >
+<title>MainThread`_find_and_load_unlocked (1 samples, 0.85%)</title><rect x="423.5" y="1013" width="10.1" height="15.0" fill="rgb(244,219,54)" rx="2" ry="2" />
+<text  x="426.50" y="1023.5" ></text>
+</g>
+<g >
+<title>MainThread`exec_module (23 samples, 19.66%)</title><rect x="867.3" y="1141" width="231.9" height="15.0" fill="rgb(227,190,53)" rx="2" ry="2" />
+<text  x="870.26" y="1151.5" >MainThread`exec_module</text>
+</g>
+<g >
+<title>MainThread`_load_unlocked (4 samples, 3.42%)</title><rect x="161.3" y="1045" width="40.3" height="15.0" fill="rgb(243,70,50)" rx="2" ry="2" />
+<text  x="164.28" y="1055.5" >Mai..</text>
+</g>
+<g >
+<title>MainThread`_load_unlocked (12 samples, 10.26%)</title><rect x="20.1" y="1333" width="121.0" height="15.0" fill="rgb(213,63,29)" rx="2" ry="2" />
+<text  x="23.09" y="1343.5" >MainThread`_loa..</text>
+</g>
+<g >
+<title>MainThread`_load_unlocked (5 samples, 4.27%)</title><rect x="998.4" y="789" width="50.4" height="15.0" fill="rgb(238,129,1)" rx="2" ry="2" />
+<text  x="1001.38" y="799.5" >MainT..</text>
+</g>
+<g >
+<title>MainThread`_call_with_frames_removed (5 samples, 4.27%)</title><rect x="161.3" y="1109" width="50.4" height="15.0" fill="rgb(234,57,31)" rx="2" ry="2" />
+<text  x="164.28" y="1119.5" >MainT..</text>
+</g>
+<g >
+<title>MainThread`get_code (1 samples, 0.85%)</title><rect x="211.7" y="1109" width="10.1" height="15.0" fill="rgb(215,32,1)" rx="2" ry="2" />
+<text  x="214.71" y="1119.5" ></text>
+</g>
+<g >
+<title>MainThread`_handle_fromlist (1 samples, 0.85%)</title><rect x="90.7" y="757" width="10.1" height="15.0" fill="rgb(235,7,0)" rx="2" ry="2" />
+<text  x="93.68" y="767.5" ></text>
+</g>
+<g >
+<title>MainThread`_get_spec (1 samples, 0.85%)</title><rect x="917.7" y="325" width="10.1" height="15.0" fill="rgb(221,145,25)" rx="2" ry="2" />
+<text  x="920.69" y="335.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_and_load (4 samples, 3.42%)</title><rect x="937.9" y="581" width="40.3" height="15.0" fill="rgb(254,178,14)" rx="2" ry="2" />
+<text  x="940.86" y="591.5" >Mai..</text>
+</g>
+<g >
+<title>MainThread`find_spec (1 samples, 0.85%)</title><rect x="786.6" y="1045" width="10.1" height="15.0" fill="rgb(222,56,48)" rx="2" ry="2" />
+<text  x="789.58" y="1055.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_and_load (1 samples, 0.85%)</title><rect x="1028.6" y="405" width="10.1" height="15.0" fill="rgb(223,117,34)" rx="2" ry="2" />
+<text  x="1031.63" y="415.5" ></text>
+</g>
+<g >
+<title>MainThread`_path_stat (1 samples, 0.85%)</title><rect x="776.5" y="901" width="10.1" height="15.0" fill="rgb(244,58,37)" rx="2" ry="2" />
+<text  x="779.50" y="911.5" ></text>
+</g>
+<g >
+<title>MainThread`_load_unlocked (1 samples, 0.85%)</title><rect x="917.7" y="453" width="10.1" height="15.0" fill="rgb(234,181,54)" rx="2" ry="2" />
+<text  x="920.69" y="463.5" ></text>
+</g>
+<g >
+<title>MainThread`_get_spec (1 samples, 0.85%)</title><rect x="776.5" y="933" width="10.1" height="15.0" fill="rgb(254,89,18)" rx="2" ry="2" />
+<text  x="779.50" y="943.5" ></text>
+</g>
+<g >
+<title>MainThread`_path_stat (1 samples, 0.85%)</title><rect x="907.6" y="421" width="10.1" height="15.0" fill="rgb(214,227,50)" rx="2" ry="2" />
+<text  x="910.61" y="431.5" ></text>
+</g>
+<g >
+<title>MainThread`&lt;module&gt; (6 samples, 5.13%)</title><rect x="161.3" y="1189" width="60.5" height="15.0" fill="rgb(239,25,44)" rx="2" ry="2" />
+<text  x="164.28" y="1199.5" >MainTh..</text>
+</g>
+<g >
+<title>MainThread`_call_with_frames_removed (3 samples, 2.56%)</title><rect x="1008.5" y="661" width="30.2" height="15.0" fill="rgb(213,207,16)" rx="2" ry="2" />
+<text  x="1011.46" y="671.5" >Ma..</text>
+</g>
+<g >
+<title>MainThread`exec_module (1 samples, 0.85%)</title><rect x="201.6" y="661" width="10.1" height="15.0" fill="rgb(238,200,49)" rx="2" ry="2" />
+<text  x="204.62" y="671.5" ></text>
+</g>
+<g >
+<title>MainThread`_call_with_frames_removed (4 samples, 3.42%)</title><rect x="161.3" y="1013" width="40.3" height="15.0" fill="rgb(222,47,33)" rx="2" ry="2" />
+<text  x="164.28" y="1023.5" >Mai..</text>
+</g>
+<g >
+<title>MainThread`_find_and_load (32 samples, 27.35%)</title><rect x="463.8" y="1125" width="322.8" height="15.0" fill="rgb(227,194,28)" rx="2" ry="2" />
+<text  x="466.85" y="1135.5" >MainThread`_find_and_load</text>
+</g>
+<g >
+<title>MainThread`_path_stat (1 samples, 0.85%)</title><rect x="847.1" y="1189" width="10.1" height="15.0" fill="rgb(212,47,11)" rx="2" ry="2" />
+<text  x="850.09" y="1199.5" ></text>
+</g>
+<g >
+<title>MainThread`_get_spec (2 samples, 1.71%)</title><rect x="221.8" y="1253" width="20.2" height="15.0" fill="rgb(228,227,13)" rx="2" ry="2" />
+<text  x="224.79" y="1263.5" ></text>
+</g>
+<g >
+<title>MainThread`get_code (4 samples, 3.42%)</title><rect x="806.8" y="1253" width="40.3" height="15.0" fill="rgb(244,184,43)" rx="2" ry="2" />
+<text  x="809.75" y="1263.5" >Mai..</text>
+</g>
+<g >
+<title>MainThread`_path_isfile (1 samples, 0.85%)</title><rect x="221.8" y="1221" width="10.1" height="15.0" fill="rgb(220,156,30)" rx="2" ry="2" />
+<text  x="224.79" y="1231.5" ></text>
+</g>
+<g >
+<title>MainThread`_call_with_frames_removed (4 samples, 3.42%)</title><rect x="998.4" y="757" width="40.3" height="15.0" fill="rgb(240,68,42)" rx="2" ry="2" />
+<text  x="1001.38" y="767.5" >Mai..</text>
+</g>
+<g >
+<title>MainThread`_find_spec (1 samples, 0.85%)</title><rect x="847.1" y="1253" width="10.1" height="15.0" fill="rgb(251,126,11)" rx="2" ry="2" />
+<text  x="850.09" y="1263.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_spec (2 samples, 1.71%)</title><rect x="937.9" y="357" width="20.1" height="15.0" fill="rgb(248,39,50)" rx="2" ry="2" />
+<text  x="940.86" y="367.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_and_load_unlocked (9 samples, 7.69%)</title><rect x="262.1" y="869" width="90.8" height="15.0" fill="rgb(208,144,21)" rx="2" ry="2" />
+<text  x="265.14" y="879.5" >MainThread..</text>
+</g>
+<g >
+<title>MainThread`_find_and_load (1 samples, 0.85%)</title><rect x="201.6" y="805" width="10.1" height="15.0" fill="rgb(209,69,48)" rx="2" ry="2" />
+<text  x="204.62" y="815.5" ></text>
+</g>
+<g >
+<title>MainThread`find_spec (3 samples, 2.56%)</title><rect x="1048.8" y="949" width="30.3" height="15.0" fill="rgb(248,160,44)" rx="2" ry="2" />
+<text  x="1051.80" y="959.5" >Ma..</text>
+</g>
+<g >
+<title>MainThread`get_data (1 samples, 0.85%)</title><rect x="242.0" y="901" width="10.1" height="15.0" fill="rgb(213,71,18)" rx="2" ry="2" />
+<text  x="244.97" y="911.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_and_load_unlocked (2 samples, 1.71%)</title><rect x="1149.7" y="1397" width="20.1" height="15.0" fill="rgb(210,124,40)" rx="2" ry="2" />
+<text  x="1152.66" y="1407.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_and_load (5 samples, 4.27%)</title><rect x="927.8" y="677" width="50.4" height="15.0" fill="rgb(234,79,15)" rx="2" ry="2" />
+<text  x="930.78" y="687.5" >MainT..</text>
+</g>
+<g >
+<title>MainThread`exec_module (1 samples, 0.85%)</title><rect x="120.9" y="1061" width="10.1" height="15.0" fill="rgb(208,28,18)" rx="2" ry="2" />
+<text  x="123.94" y="1071.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_and_load (14 samples, 11.97%)</title><rect x="262.1" y="933" width="141.2" height="15.0" fill="rgb(244,216,43)" rx="2" ry="2" />
+<text  x="265.14" y="943.5" >MainThread`_find_..</text>
+</g>
+<g >
+<title>MainThread`find_spec (1 samples, 0.85%)</title><rect x="262.1" y="805" width="10.1" height="15.0" fill="rgb(213,189,51)" rx="2" ry="2" />
+<text  x="265.14" y="815.5" ></text>
+</g>
+<g >
+<title>MainThread`find_spec (1 samples, 0.85%)</title><rect x="857.2" y="1141" width="10.1" height="15.0" fill="rgb(246,181,13)" rx="2" ry="2" />
+<text  x="860.18" y="1151.5" ></text>
+</g>
+<g >
+<title>MainThread`_path_stat (1 samples, 0.85%)</title><rect x="504.2" y="837" width="10.1" height="15.0" fill="rgb(230,114,50)" rx="2" ry="2" />
+<text  x="507.19" y="847.5" ></text>
+</g>
+<g >
+<title>MainThread`_get_spec (1 samples, 0.85%)</title><rect x="1099.2" y="1093" width="10.1" height="15.0" fill="rgb(226,203,33)" rx="2" ry="2" />
+<text  x="1102.23" y="1103.5" ></text>
+</g>
+<g >
+<title>MainThread`find_spec (2 samples, 1.71%)</title><rect x="978.2" y="773" width="20.2" height="15.0" fill="rgb(220,133,42)" rx="2" ry="2" />
+<text  x="981.21" y="783.5" ></text>
+</g>
+<g >
+<title>MainThread`exec_module (95 samples, 81.20%)</title><rect x="161.3" y="1365" width="958.1" height="15.0" fill="rgb(249,66,49)" rx="2" ry="2" />
+<text  x="164.28" y="1375.5" >MainThread`exec_module</text>
+</g>
+<g >
+<title>MainThread`_call_with_frames_removed (4 samples, 3.42%)</title><rect x="937.9" y="517" width="40.3" height="15.0" fill="rgb(248,86,29)" rx="2" ry="2" />
+<text  x="940.86" y="527.5" >Mai..</text>
+</g>
+<g >
+<title>MainThread`_handle_fromlist (26 samples, 22.22%)</title><rect x="847.1" y="1317" width="262.2" height="15.0" fill="rgb(219,166,17)" rx="2" ry="2" />
+<text  x="850.09" y="1327.5" >MainThread`_handle_fromlist</text>
+</g>
+<g >
+<title>MainThread`_path_stat (1 samples, 0.85%)</title><rect x="786.6" y="997" width="10.1" height="15.0" fill="rgb(216,38,12)" rx="2" ry="2" />
+<text  x="789.58" y="1007.5" ></text>
+</g>
+<g >
+<title>MainThread`exec_module (2 samples, 1.71%)</title><rect x="332.7" y="517" width="20.2" height="15.0" fill="rgb(227,166,48)" rx="2" ry="2" />
+<text  x="335.74" y="527.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_and_load (26 samples, 22.22%)</title><rect x="847.1" y="1285" width="262.2" height="15.0" fill="rgb(233,67,23)" rx="2" ry="2" />
+<text  x="850.09" y="1295.5" >MainThread`_find_and_load</text>
+</g>
+<g >
+<title>MainThread`&lt;module&gt; (1 samples, 0.85%)</title><rect x="1028.6" y="421" width="10.1" height="15.0" fill="rgb(215,135,39)" rx="2" ry="2" />
+<text  x="1031.63" y="431.5" ></text>
+</g>
+<g >
+<title>MainThread`_call_with_frames_removed (1 samples, 0.85%)</title><rect x="90.7" y="741" width="10.1" height="15.0" fill="rgb(219,229,39)" rx="2" ry="2" />
+<text  x="93.68" y="751.5" ></text>
+</g>
+<g >
+<title>MainThread`_call_with_frames_removed (1 samples, 0.85%)</title><rect x="201.6" y="837" width="10.1" height="15.0" fill="rgb(244,21,0)" rx="2" ry="2" />
+<text  x="204.62" y="847.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_and_load (112 samples, 95.73%)</title><rect x="10.0" y="1509" width="1129.6" height="15.0" fill="rgb(224,132,14)" rx="2" ry="2" />
+<text  x="13.00" y="1519.5" >MainThread`_find_and_load</text>
+</g>
+<g >
+<title>MainThread`_call_with_frames_removed (5 samples, 4.27%)</title><rect x="927.8" y="693" width="50.4" height="15.0" fill="rgb(205,46,24)" rx="2" ry="2" />
+<text  x="930.78" y="703.5" >MainT..</text>
+</g>
+<g >
+<title>MainThread`find_spec (1 samples, 0.85%)</title><rect x="927.8" y="629" width="10.1" height="15.0" fill="rgb(229,150,22)" rx="2" ry="2" />
+<text  x="930.78" y="639.5" ></text>
+</g>
+<g >
+<title>MainThread`get_code (1 samples, 0.85%)</title><rect x="100.8" y="1109" width="10.1" height="15.0" fill="rgb(245,201,5)" rx="2" ry="2" />
+<text  x="103.77" y="1119.5" ></text>
+</g>
+<g >
+<title>MainThread`find_spec (2 samples, 1.71%)</title><rect x="282.3" y="245" width="20.2" height="15.0" fill="rgb(216,114,42)" rx="2" ry="2" />
+<text  x="285.31" y="255.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_and_load (1 samples, 0.85%)</title><rect x="1028.6" y="597" width="10.1" height="15.0" fill="rgb(230,96,22)" rx="2" ry="2" />
+<text  x="1031.63" y="607.5" ></text>
+</g>
+<g >
+<title>MainThread`_load_unlocked (23 samples, 19.66%)</title><rect x="867.3" y="1157" width="231.9" height="15.0" fill="rgb(221,145,16)" rx="2" ry="2" />
+<text  x="870.26" y="1167.5" >MainThread`_load_unlocked</text>
+</g>
+<g >
+<title>MainThread`exec_module (1 samples, 0.85%)</title><rect x="201.6" y="757" width="10.1" height="15.0" fill="rgb(232,98,40)" rx="2" ry="2" />
+<text  x="204.62" y="767.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_and_load_unlocked (1 samples, 0.85%)</title><rect x="1159.7" y="1301" width="10.1" height="15.0" fill="rgb(242,153,12)" rx="2" ry="2" />
+<text  x="1162.74" y="1311.5" ></text>
+</g>
+<g >
+<title>MainThread`_get_spec (2 samples, 1.71%)</title><rect x="867.3" y="1029" width="20.1" height="15.0" fill="rgb(238,168,50)" rx="2" ry="2" />
+<text  x="870.26" y="1039.5" ></text>
+</g>
+<g >
+<title>MainThread`_load_unlocked (3 samples, 2.56%)</title><rect x="373.1" y="805" width="30.2" height="15.0" fill="rgb(231,171,54)" rx="2" ry="2" />
+<text  x="376.08" y="815.5" >Ma..</text>
+</g>
+<g >
+<title>MainThread`_path_stat (1 samples, 0.85%)</title><rect x="373.1" y="517" width="10.1" height="15.0" fill="rgb(232,122,37)" rx="2" ry="2" />
+<text  x="376.08" y="527.5" ></text>
+</g>
+<g >
+<title>MainThread`_call_with_frames_removed (112 samples, 95.73%)</title><rect x="10.0" y="1445" width="1129.6" height="15.0" fill="rgb(250,229,4)" rx="2" ry="2" />
+<text  x="13.00" y="1455.5" >MainThread`_call_with_frames_removed</text>
+</g>
+<g >
+<title>MainThread`_find_and_load (4 samples, 3.42%)</title><rect x="161.3" y="981" width="40.3" height="15.0" fill="rgb(242,218,37)" rx="2" ry="2" />
+<text  x="164.28" y="991.5" >Mai..</text>
+</g>
+<g >
+<title>MainThread`_path_isfile (3 samples, 2.56%)</title><rect x="1048.8" y="901" width="30.3" height="15.0" fill="rgb(239,181,23)" rx="2" ry="2" />
+<text  x="1051.80" y="911.5" >Ma..</text>
+</g>
+<g >
+<title>MainThread`_find_spec (1 samples, 0.85%)</title><rect x="252.1" y="997" width="10.0" height="15.0" fill="rgb(223,82,6)" rx="2" ry="2" />
+<text  x="255.05" y="1007.5" ></text>
+</g>
+<g >
+<title>MainThread`_call_with_frames_removed (1 samples, 0.85%)</title><rect x="80.6" y="821" width="10.1" height="15.0" fill="rgb(215,64,41)" rx="2" ry="2" />
+<text  x="83.60" y="831.5" ></text>
+</g>
+<g >
+<title>MainThread`find_spec (1 samples, 0.85%)</title><rect x="1018.5" y="549" width="10.1" height="15.0" fill="rgb(220,227,39)" rx="2" ry="2" />
+<text  x="1021.55" y="559.5" ></text>
+</g>
+<g >
+<title>MainThread`_handle_fromlist (2 samples, 1.71%)</title><rect x="110.9" y="1141" width="20.1" height="15.0" fill="rgb(223,87,50)" rx="2" ry="2" />
+<text  x="113.85" y="1151.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_and_load_unlocked (9 samples, 7.69%)</title><rect x="887.4" y="789" width="90.8" height="15.0" fill="rgb(252,54,22)" rx="2" ry="2" />
+<text  x="890.44" y="799.5" >MainThread..</text>
+</g>
+<g >
+<title>MainThread`_find_and_load (2 samples, 1.71%)</title><rect x="1149.7" y="1413" width="20.1" height="15.0" fill="rgb(253,104,53)" rx="2" ry="2" />
+<text  x="1152.66" y="1423.5" ></text>
+</g>
+<g >
+<title>MainThread`create_module (1 samples, 0.85%)</title><rect x="1038.7" y="757" width="10.1" height="15.0" fill="rgb(237,13,6)" rx="2" ry="2" />
+<text  x="1041.72" y="767.5" ></text>
+</g>
+<g >
+<title>MainThread`_path_stat (1 samples, 0.85%)</title><rect x="867.3" y="965" width="10.1" height="15.0" fill="rgb(245,162,33)" rx="2" ry="2" />
+<text  x="870.26" y="975.5" ></text>
+</g>
+<g >
+<title>MainThread`&lt;module&gt; (56 samples, 47.86%)</title><rect x="242.0" y="1237" width="564.8" height="15.0" fill="rgb(227,141,30)" rx="2" ry="2" />
+<text  x="244.97" y="1247.5" >MainThread`&lt;module&gt;</text>
+</g>
+<g >
+<title>MainThread`find_spec (3 samples, 2.56%)</title><rect x="463.8" y="1077" width="30.3" height="15.0" fill="rgb(219,81,31)" rx="2" ry="2" />
+<text  x="466.85" y="1087.5" >Ma..</text>
+</g>
+<g >
+<title>MainThread`_path_is_mode_type (1 samples, 0.85%)</title><rect x="373.1" y="533" width="10.1" height="15.0" fill="rgb(242,56,15)" rx="2" ry="2" />
+<text  x="376.08" y="543.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_and_load_unlocked (4 samples, 3.42%)</title><rect x="161.3" y="1061" width="40.3" height="15.0" fill="rgb(246,79,22)" rx="2" ry="2" />
+<text  x="164.28" y="1071.5" >Mai..</text>
+</g>
+<g >
+<title>MainThread`&lt;module&gt; (3 samples, 2.56%)</title><rect x="282.3" y="341" width="30.3" height="15.0" fill="rgb(205,200,38)" rx="2" ry="2" />
+<text  x="285.31" y="351.5" >Ma..</text>
+</g>
+<g >
+<title>MainThread`_find_and_load_unlocked (4 samples, 3.42%)</title><rect x="363.0" y="821" width="40.3" height="15.0" fill="rgb(219,154,45)" rx="2" ry="2" />
+<text  x="365.99" y="831.5" >Mai..</text>
+</g>
+<g >
+<title>MainThread`find_spec (1 samples, 0.85%)</title><rect x="363.0" y="789" width="10.1" height="15.0" fill="rgb(239,128,9)" rx="2" ry="2" />
+<text  x="365.99" y="799.5" ></text>
+</g>
+<g >
+<title>MainThread`exec_module (6 samples, 5.13%)</title><rect x="161.3" y="1125" width="60.5" height="15.0" fill="rgb(213,17,15)" rx="2" ry="2" />
+<text  x="164.28" y="1135.5" >MainTh..</text>
+</g>
+<g >
+<title>MainThread`_find_and_load_unlocked (6 samples, 5.13%)</title><rect x="161.3" y="1157" width="60.5" height="15.0" fill="rgb(211,3,14)" rx="2" ry="2" />
+<text  x="164.28" y="1167.5" >MainTh..</text>
+</g>
+<g >
+<title>MainThread`_path_stat (1 samples, 0.85%)</title><rect x="917.7" y="293" width="10.1" height="15.0" fill="rgb(206,132,10)" rx="2" ry="2" />
+<text  x="920.69" y="303.5" ></text>
+</g>
+<g >
+<title>MainThread`find_spec (1 samples, 0.85%)</title><rect x="10.0" y="1285" width="10.1" height="15.0" fill="rgb(215,77,42)" rx="2" ry="2" />
+<text  x="13.00" y="1295.5" ></text>
+</g>
+<g >
+<title>MainThread`_load_unlocked (1 samples, 0.85%)</title><rect x="1028.6" y="565" width="10.1" height="15.0" fill="rgb(226,163,17)" rx="2" ry="2" />
+<text  x="1031.63" y="575.5" ></text>
+</g>
+<g >
+<title>MainThread`find_library (1 samples, 0.85%)</title><rect x="1159.7" y="1221" width="10.1" height="15.0" fill="rgb(233,40,20)" rx="2" ry="2" />
+<text  x="1162.74" y="1231.5" ></text>
+</g>
+<g >
+<title>MainThread`&lt;module&gt; (2 samples, 1.71%)</title><rect x="110.9" y="1157" width="20.1" height="15.0" fill="rgb(233,36,28)" rx="2" ry="2" />
+<text  x="113.85" y="1167.5" ></text>
+</g>
+<g >
+<title>MainThread`exec_module (7 samples, 5.98%)</title><rect x="40.3" y="1221" width="70.6" height="15.0" fill="rgb(237,130,27)" rx="2" ry="2" />
+<text  x="43.26" y="1231.5" >MainThr..</text>
+</g>
+<g >
+<title>MainThread`_path_isfile (2 samples, 1.71%)</title><rect x="978.2" y="725" width="20.2" height="15.0" fill="rgb(250,136,45)" rx="2" ry="2" />
+<text  x="981.21" y="735.5" ></text>
+</g>
+<g >
+<title>MainThread`_get_spec (1 samples, 0.85%)</title><rect x="60.4" y="1013" width="10.1" height="15.0" fill="rgb(212,190,39)" rx="2" ry="2" />
+<text  x="63.43" y="1023.5" ></text>
+</g>
+<g >
+<title>MainThread`find_spec (1 samples, 0.85%)</title><rect x="847.1" y="1205" width="10.1" height="15.0" fill="rgb(228,220,7)" rx="2" ry="2" />
+<text  x="850.09" y="1215.5" ></text>
+</g>
+<g >
+<title>MainThread`_handle_fromlist (1 samples, 0.85%)</title><rect x="786.6" y="1221" width="10.1" height="15.0" fill="rgb(243,6,20)" rx="2" ry="2" />
+<text  x="789.58" y="1231.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_and_load_unlocked (2 samples, 1.71%)</title><rect x="897.5" y="501" width="20.2" height="15.0" fill="rgb(242,128,46)" rx="2" ry="2" />
+<text  x="900.52" y="511.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_and_load_unlocked (1 samples, 0.85%)</title><rect x="1038.7" y="709" width="10.1" height="15.0" fill="rgb(251,179,45)" rx="2" ry="2" />
+<text  x="1041.72" y="719.5" ></text>
+</g>
+<g >
+<title>MainThread`create_module (32 samples, 27.35%)</title><rect x="463.8" y="1157" width="322.8" height="15.0" fill="rgb(205,53,39)" rx="2" ry="2" />
+<text  x="466.85" y="1167.5" >MainThread`create_module</text>
+</g>
+<g >
+<title>MainThread`&lt;module&gt; (4 samples, 3.42%)</title><rect x="161.3" y="997" width="40.3" height="15.0" fill="rgb(205,175,5)" rx="2" ry="2" />
+<text  x="164.28" y="1007.5" >Mai..</text>
+</g>
+<g >
+<title>MainThread`_call_with_frames_removed (9 samples, 7.69%)</title><rect x="887.4" y="821" width="90.8" height="15.0" fill="rgb(234,177,41)" rx="2" ry="2" />
+<text  x="890.44" y="831.5" >MainThread..</text>
+</g>
+<g >
+<title>MainThread`exec_module (4 samples, 3.42%)</title><rect x="161.3" y="1029" width="40.3" height="15.0" fill="rgb(242,126,20)" rx="2" ry="2" />
+<text  x="164.28" y="1039.5" >Mai..</text>
+</g>
+<g >
+<title>MainThread`exec_module (4 samples, 3.42%)</title><rect x="937.9" y="437" width="40.3" height="15.0" fill="rgb(213,25,32)" rx="2" ry="2" />
+<text  x="940.86" y="447.5" >Mai..</text>
+</g>
+<g >
+<title>MainThread`_find_spec (2 samples, 1.71%)</title><rect x="141.1" y="1381" width="20.2" height="15.0" fill="rgb(230,163,32)" rx="2" ry="2" />
+<text  x="144.11" y="1391.5" ></text>
+</g>
+<g >
+<title>MainThread`_infer_compression (2 samples, 1.71%)</title><rect x="1149.7" y="1477" width="20.1" height="15.0" fill="rgb(211,110,29)" rx="2" ry="2" />
+<text  x="1152.66" y="1487.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_and_load (1 samples, 0.85%)</title><rect x="1008.5" y="533" width="10.0" height="15.0" fill="rgb(253,121,34)" rx="2" ry="2" />
+<text  x="1011.46" y="543.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_and_load (1 samples, 0.85%)</title><rect x="120.9" y="917" width="10.1" height="15.0" fill="rgb(244,55,16)" rx="2" ry="2" />
+<text  x="123.94" y="927.5" ></text>
+</g>
+<g >
+<title>MainThread`_path_stat (1 samples, 0.85%)</title><rect x="998.4" y="629" width="10.1" height="15.0" fill="rgb(245,54,43)" rx="2" ry="2" />
+<text  x="1001.38" y="639.5" ></text>
+</g>
+<g >
+<title>MainThread`find_spec (1 samples, 0.85%)</title><rect x="70.5" y="901" width="10.1" height="15.0" fill="rgb(228,57,2)" rx="2" ry="2" />
+<text  x="73.51" y="911.5" ></text>
+</g>
+<g >
+<title>MainThread`_call_with_frames_removed (1 samples, 0.85%)</title><rect x="423.5" y="997" width="10.1" height="15.0" fill="rgb(233,150,47)" rx="2" ry="2" />
+<text  x="426.50" y="1007.5" ></text>
+</g>
+<g >
+<title>MainThread`&lt;module&gt; (1 samples, 0.85%)</title><rect x="120.9" y="1029" width="10.1" height="15.0" fill="rgb(205,132,3)" rx="2" ry="2" />
+<text  x="123.94" y="1039.5" ></text>
+</g>
+<g >
+<title>MainThread`resource_exists (26 samples, 22.22%)</title><rect x="514.3" y="709" width="262.2" height="15.0" fill="rgb(232,116,52)" rx="2" ry="2" />
+<text  x="517.27" y="719.5" >MainThread`resource_exists</text>
+</g>
+<g >
+<title>MainThread`gen_candidates (1 samples, 0.85%)</title><rect x="322.6" y="389" width="10.1" height="15.0" fill="rgb(238,12,43)" rx="2" ry="2" />
+<text  x="325.65" y="399.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_and_load_unlocked (3 samples, 2.56%)</title><rect x="70.5" y="965" width="30.3" height="15.0" fill="rgb(249,127,13)" rx="2" ry="2" />
+<text  x="73.51" y="975.5" >Ma..</text>
+</g>
+<g >
+<title>MainThread`find_spec (1 samples, 0.85%)</title><rect x="1038.7" y="677" width="10.1" height="15.0" fill="rgb(226,83,25)" rx="2" ry="2" />
+<text  x="1041.72" y="687.5" ></text>
+</g>
+<g >
+<title>MainThread`_load_unlocked (4 samples, 3.42%)</title><rect x="937.9" y="549" width="40.3" height="15.0" fill="rgb(209,121,8)" rx="2" ry="2" />
+<text  x="940.86" y="559.5" >Mai..</text>
+</g>
+<g >
+<title>MainThread`_find_and_load (3 samples, 2.56%)</title><rect x="897.5" y="709" width="30.3" height="15.0" fill="rgb(247,34,20)" rx="2" ry="2" />
+<text  x="900.52" y="719.5" >Ma..</text>
+</g>
+<g >
+<title>MainThread`_find_spec (1 samples, 0.85%)</title><rect x="363.0" y="805" width="10.1" height="15.0" fill="rgb(246,129,48)" rx="2" ry="2" />
+<text  x="365.99" y="815.5" ></text>
+</g>
+<g >
+<title>MainThread`&lt;module&gt; (8 samples, 6.84%)</title><rect x="272.2" y="805" width="80.7" height="15.0" fill="rgb(250,90,23)" rx="2" ry="2" />
+<text  x="275.22" y="815.5" >MainThrea..</text>
+</g>
+<g >
+<title>MainThread`_get_spec (1 samples, 0.85%)</title><rect x="494.1" y="965" width="10.1" height="15.0" fill="rgb(230,115,26)" rx="2" ry="2" />
+<text  x="497.10" y="975.5" ></text>
+</g>
+<g >
+<title>MainThread`_load_unlocked (8 samples, 6.84%)</title><rect x="897.5" y="773" width="80.7" height="15.0" fill="rgb(219,223,44)" rx="2" ry="2" />
+<text  x="900.52" y="783.5" >MainThrea..</text>
+</g>
+<g >
+<title>MainThread`find_spec (1 samples, 0.85%)</title><rect x="1028.6" y="357" width="10.1" height="15.0" fill="rgb(219,99,13)" rx="2" ry="2" />
+<text  x="1031.63" y="367.5" ></text>
+</g>
+<g >
+<title>MainThread`find_spec (1 samples, 0.85%)</title><rect x="887.4" y="757" width="10.1" height="15.0" fill="rgb(244,69,26)" rx="2" ry="2" />
+<text  x="890.44" y="767.5" ></text>
+</g>
+<g >
+<title>MainThread`_call_with_frames_removed (4 samples, 3.42%)</title><rect x="60.4" y="1109" width="40.4" height="15.0" fill="rgb(241,48,54)" rx="2" ry="2" />
+<text  x="63.43" y="1119.5" >Mai..</text>
+</g>
+<g >
+<title>MainThread`_path_stat (1 samples, 0.85%)</title><rect x="887.4" y="677" width="10.1" height="15.0" fill="rgb(210,34,29)" rx="2" ry="2" />
+<text  x="890.44" y="687.5" ></text>
+</g>
+<g >
+<title>MainThread`combine (1 samples, 0.85%)</title><rect x="1139.6" y="1445" width="10.1" height="15.0" fill="rgb(208,20,13)" rx="2" ry="2" />
+<text  x="1142.57" y="1455.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_spec (1 samples, 0.85%)</title><rect x="60.4" y="1045" width="10.1" height="15.0" fill="rgb(241,151,24)" rx="2" ry="2" />
+<text  x="63.43" y="1055.5" ></text>
+</g>
+<g >
+<title>MainThread`is_instance_factory (1 samples, 0.85%)</title><rect x="796.7" y="1221" width="10.1" height="15.0" fill="rgb(251,98,4)" rx="2" ry="2" />
+<text  x="799.67" y="1231.5" ></text>
+</g>
+<g >
+<title>MainThread`exec_module (8 samples, 6.84%)</title><rect x="272.2" y="613" width="80.7" height="15.0" fill="rgb(248,80,22)" rx="2" ry="2" />
+<text  x="275.22" y="623.5" >MainThrea..</text>
+</g>
+<g >
+<title>MainThread`__makeattr (2 samples, 1.71%)</title><rect x="1149.7" y="1445" width="20.1" height="15.0" fill="rgb(215,63,15)" rx="2" ry="2" />
+<text  x="1152.66" y="1455.5" ></text>
+</g>
+<g >
+<title>MainThread`&lt;module&gt; (3 samples, 2.56%)</title><rect x="897.5" y="533" width="30.3" height="15.0" fill="rgb(242,199,48)" rx="2" ry="2" />
+<text  x="900.52" y="543.5" >Ma..</text>
+</g>
+<g >
+<title>MainThread`exec_module (2 samples, 1.71%)</title><rect x="80.6" y="933" width="20.2" height="15.0" fill="rgb(231,192,6)" rx="2" ry="2" />
+<text  x="83.60" y="943.5" ></text>
+</g>
+<g >
+<title>MainThread`exec_module (112 samples, 95.73%)</title><rect x="10.0" y="1461" width="1129.6" height="15.0" fill="rgb(240,137,23)" rx="2" ry="2" />
+<text  x="13.00" y="1471.5" >MainThread`exec_module</text>
+</g>
+<g >
+<title>MainThread`_load_unlocked (7 samples, 5.98%)</title><rect x="40.3" y="1237" width="70.6" height="15.0" fill="rgb(245,38,49)" rx="2" ry="2" />
+<text  x="43.26" y="1247.5" >MainThr..</text>
+</g>
+<g >
+<title>MainThread`_get_spec (1 samples, 0.85%)</title><rect x="1008.5" y="469" width="10.0" height="15.0" fill="rgb(208,91,46)" rx="2" ry="2" />
+<text  x="1011.46" y="479.5" ></text>
+</g>
+<g >
+<title>MainThread`module_from_spec (32 samples, 27.35%)</title><rect x="463.8" y="1173" width="322.8" height="15.0" fill="rgb(253,38,52)" rx="2" ry="2" />
+<text  x="466.85" y="1183.5" >MainThread`module_from_spec</text>
+</g>
+<g >
+<title>MainThread`_load_unlocked (3 samples, 2.56%)</title><rect x="282.3" y="389" width="30.3" height="15.0" fill="rgb(250,114,46)" rx="2" ry="2" />
+<text  x="285.31" y="399.5" >Ma..</text>
+</g>
+<g >
+<title>MainThread`_find_and_load (6 samples, 5.13%)</title><rect x="161.3" y="1173" width="60.5" height="15.0" fill="rgb(240,95,12)" rx="2" ry="2" />
+<text  x="164.28" y="1183.5" >MainTh..</text>
+</g>
+<g >
+<title>MainThread`_path_stat (2 samples, 1.71%)</title><rect x="282.3" y="229" width="20.2" height="15.0" fill="rgb(212,184,23)" rx="2" ry="2" />
+<text  x="285.31" y="239.5" ></text>
+</g>
+<g >
+<title>MainThread`_get_spec (1 samples, 0.85%)</title><rect x="403.3" y="789" width="10.1" height="15.0" fill="rgb(235,60,28)" rx="2" ry="2" />
+<text  x="406.33" y="799.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_and_load_unlocked (1 samples, 0.85%)</title><rect x="1099.2" y="1141" width="10.1" height="15.0" fill="rgb(253,56,31)" rx="2" ry="2" />
+<text  x="1102.23" y="1151.5" ></text>
+</g>
+<g >
+<title>all (117 samples, 100%)</title><rect x="10.0" y="1589" width="1180.0" height="15.0" fill="rgb(220,164,5)" rx="2" ry="2" />
+<text  x="13.00" y="1599.5" ></text>
+</g>
+<g >
+<title>MainThread`mean (1 samples, 0.85%)</title><rect x="1139.6" y="1509" width="10.1" height="15.0" fill="rgb(211,32,7)" rx="2" ry="2" />
+<text  x="1142.57" y="1519.5" ></text>
+</g>
+<g >
+<title>MainThread`&lt;genexpr&gt; (26 samples, 22.22%)</title><rect x="514.3" y="725" width="262.2" height="15.0" fill="rgb(237,110,23)" rx="2" ry="2" />
+<text  x="517.27" y="735.5" >MainThread`&lt;genexpr&gt;</text>
+</g>
+<g >
+<title>MainThread`_call_with_frames_removed (1 samples, 0.85%)</title><rect x="796.7" y="1173" width="10.1" height="15.0" fill="rgb(253,88,51)" rx="2" ry="2" />
+<text  x="799.67" y="1183.5" ></text>
+</g>
+<g >
+<title>MainThread`_get_spec (2 samples, 1.71%)</title><rect x="40.3" y="1109" width="20.1" height="15.0" fill="rgb(239,177,27)" rx="2" ry="2" />
+<text  x="43.26" y="1119.5" ></text>
+</g>
+<g >
+<title>MainThread`_path_stat (1 samples, 0.85%)</title><rect x="1008.5" y="437" width="10.0" height="15.0" fill="rgb(219,198,26)" rx="2" ry="2" />
+<text  x="1011.46" y="447.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_and_load_unlocked (26 samples, 22.22%)</title><rect x="847.1" y="1269" width="262.2" height="15.0" fill="rgb(250,49,49)" rx="2" ry="2" />
+<text  x="850.09" y="1279.5" >MainThread`_find_and_load_unlocked</text>
+</g>
+<g >
+<title>MainThread`_path_isfile (1 samples, 0.85%)</title><rect x="352.9" y="837" width="10.1" height="15.0" fill="rgb(252,222,2)" rx="2" ry="2" />
+<text  x="355.91" y="847.5" ></text>
+</g>
+<g >
+<title>MainThread`_load_unlocked (4 samples, 3.42%)</title><rect x="161.3" y="949" width="40.3" height="15.0" fill="rgb(254,218,16)" rx="2" ry="2" />
+<text  x="164.28" y="959.5" >Mai..</text>
+</g>
+<g >
+<title>MainThread`&lt;module&gt; (116 samples, 99.15%)</title><rect x="10.0" y="1525" width="1169.9" height="15.0" fill="rgb(234,2,11)" rx="2" ry="2" />
+<text  x="13.00" y="1535.5" >MainThread`&lt;module&gt;</text>
+</g>
+<g >
+<title>MainThread`exec_module (1 samples, 0.85%)</title><rect x="917.7" y="437" width="10.1" height="15.0" fill="rgb(252,215,7)" rx="2" ry="2" />
+<text  x="920.69" y="447.5" ></text>
+</g>
+<g >
+<title>MainThread`_call_with_frames_removed (17 samples, 14.53%)</title><rect x="242.0" y="1061" width="171.4" height="15.0" fill="rgb(223,219,28)" rx="2" ry="2" />
+<text  x="244.97" y="1071.5" >MainThread`_call_with_..</text>
+</g>
+<g >
+<title>MainThread`exec_module (1 samples, 0.85%)</title><rect x="1159.7" y="1269" width="10.1" height="15.0" fill="rgb(218,192,30)" rx="2" ry="2" />
+<text  x="1162.74" y="1279.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_and_load_unlocked (1 samples, 0.85%)</title><rect x="786.6" y="1077" width="10.1" height="15.0" fill="rgb(241,212,38)" rx="2" ry="2" />
+<text  x="789.58" y="1087.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_and_load_unlocked (1 samples, 0.85%)</title><rect x="242.0" y="965" width="10.1" height="15.0" fill="rgb(218,148,1)" rx="2" ry="2" />
+<text  x="244.97" y="975.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_and_load (1 samples, 0.85%)</title><rect x="796.7" y="1109" width="10.1" height="15.0" fill="rgb(229,64,54)" rx="2" ry="2" />
+<text  x="799.67" y="1119.5" ></text>
+</g>
+<g >
+<title>MainThread`exec_module (4 samples, 3.42%)</title><rect x="937.9" y="629" width="40.3" height="15.0" fill="rgb(236,87,50)" rx="2" ry="2" />
+<text  x="940.86" y="639.5" >Mai..</text>
+</g>
+<g >
+<title>MainThread`_get_spec (1 samples, 0.85%)</title><rect x="958.0" y="229" width="10.1" height="15.0" fill="rgb(241,206,33)" rx="2" ry="2" />
+<text  x="961.03" y="239.5" ></text>
+</g>
+<g >
+<title>MainThread`__init__ (1 samples, 0.85%)</title><rect x="161.3" y="885" width="10.1" height="15.0" fill="rgb(242,81,43)" rx="2" ry="2" />
+<text  x="164.28" y="895.5" ></text>
+</g>
+<g >
+<title>MainThread`find_spec (1 samples, 0.85%)</title><rect x="1099.2" y="1077" width="10.1" height="15.0" fill="rgb(207,170,38)" rx="2" ry="2" />
+<text  x="1102.23" y="1087.5" ></text>
+</g>
+<g >
+<title>MainThread`&lt;module&gt; (8 samples, 6.84%)</title><rect x="897.5" y="725" width="80.7" height="15.0" fill="rgb(243,118,28)" rx="2" ry="2" />
+<text  x="900.52" y="735.5" >MainThrea..</text>
+</g>
+<g >
+<title>MainThread`_find_and_load_unlocked (9 samples, 7.69%)</title><rect x="20.1" y="1253" width="90.8" height="15.0" fill="rgb(219,70,28)" rx="2" ry="2" />
+<text  x="23.09" y="1263.5" >MainThread..</text>
+</g>
+<g >
+<title>MainThread`exec_module (60 samples, 51.28%)</title><rect x="242.0" y="1269" width="605.1" height="15.0" fill="rgb(226,148,54)" rx="2" ry="2" />
+<text  x="244.97" y="1279.5" >MainThread`exec_module</text>
+</g>
+<g >
+<title>MainThread`exec_module (3 samples, 2.56%)</title><rect x="282.3" y="373" width="30.3" height="15.0" fill="rgb(236,128,9)" rx="2" ry="2" />
+<text  x="285.31" y="383.5" >Ma..</text>
+</g>
+<g >
+<title>MainThread`open_resource (22 samples, 18.80%)</title><rect x="554.6" y="693" width="221.9" height="15.0" fill="rgb(229,55,50)" rx="2" ry="2" />
+<text  x="557.62" y="703.5" >MainThread`open_resource</text>
+</g>
+<g >
+<title>MainThread`_path_is_mode_type (1 samples, 0.85%)</title><rect x="161.3" y="597" width="10.1" height="15.0" fill="rgb(233,57,16)" rx="2" ry="2" />
+<text  x="164.28" y="607.5" ></text>
+</g>
+<g >
+<title>MainThread`_path_isfile (1 samples, 0.85%)</title><rect x="90.7" y="629" width="10.1" height="15.0" fill="rgb(235,42,41)" rx="2" ry="2" />
+<text  x="93.68" y="639.5" ></text>
+</g>
+<g >
+<title>MainThread`_path_stat (3 samples, 2.56%)</title><rect x="1048.8" y="869" width="30.3" height="15.0" fill="rgb(230,40,15)" rx="2" ry="2" />
+<text  x="1051.80" y="879.5" >Ma..</text>
+</g>
+<g >
+<title>MainThread`find_spec (1 samples, 0.85%)</title><rect x="917.7" y="309" width="10.1" height="15.0" fill="rgb(252,170,42)" rx="2" ry="2" />
+<text  x="920.69" y="319.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_and_load (1 samples, 0.85%)</title><rect x="90.7" y="725" width="10.1" height="15.0" fill="rgb(242,32,11)" rx="2" ry="2" />
+<text  x="93.68" y="735.5" ></text>
+</g>
+<g >
+<title>MainThread`_call_with_frames_removed (7 samples, 5.98%)</title><rect x="978.2" y="837" width="70.6" height="15.0" fill="rgb(236,216,52)" rx="2" ry="2" />
+<text  x="981.21" y="847.5" >MainThr..</text>
+</g>
+<g >
+<title>MainThread`find_spec (1 samples, 0.85%)</title><rect x="373.1" y="565" width="10.1" height="15.0" fill="rgb(232,88,45)" rx="2" ry="2" />
+<text  x="376.08" y="575.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_and_load (26 samples, 22.22%)</title><rect x="514.3" y="837" width="262.2" height="15.0" fill="rgb(224,193,47)" rx="2" ry="2" />
+<text  x="517.27" y="847.5" >MainThread`_find_and_load</text>
+</g>
+<g >
+<title>MainThread`_find_and_load_unlocked (1 samples, 0.85%)</title><rect x="403.3" y="981" width="10.1" height="15.0" fill="rgb(245,139,42)" rx="2" ry="2" />
+<text  x="406.33" y="991.5" ></text>
+</g>
+<g >
+<title>MainThread`get_code (1 samples, 0.85%)</title><rect x="242.0" y="917" width="10.1" height="15.0" fill="rgb(245,0,36)" rx="2" ry="2" />
+<text  x="244.97" y="927.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_and_load (1 samples, 0.85%)</title><rect x="161.3" y="709" width="10.1" height="15.0" fill="rgb(242,113,12)" rx="2" ry="2" />
+<text  x="164.28" y="719.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_and_load_unlocked (1 samples, 0.85%)</title><rect x="786.6" y="1173" width="10.1" height="15.0" fill="rgb(220,68,21)" rx="2" ry="2" />
+<text  x="789.58" y="1183.5" ></text>
+</g>
+<g >
+<title>MainThread`_load_unlocked (1 samples, 0.85%)</title><rect x="786.6" y="1157" width="10.1" height="15.0" fill="rgb(246,107,9)" rx="2" ry="2" />
+<text  x="789.58" y="1167.5" ></text>
+</g>
+<g >
+<title>MainThread`exec_module (1 samples, 0.85%)</title><rect x="242.0" y="933" width="10.1" height="15.0" fill="rgb(235,99,10)" rx="2" ry="2" />
+<text  x="244.97" y="943.5" ></text>
+</g>
+<g >
+<title>MainThread`_path_is_mode_type (1 samples, 0.85%)</title><rect x="272.2" y="405" width="10.1" height="15.0" fill="rgb(245,159,41)" rx="2" ry="2" />
+<text  x="275.22" y="415.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_spec (1 samples, 0.85%)</title><rect x="10.0" y="1333" width="10.1" height="15.0" fill="rgb(252,195,44)" rx="2" ry="2" />
+<text  x="13.00" y="1343.5" ></text>
+</g>
+<g >
+<title>MainThread`_path_is_mode_type (1 samples, 0.85%)</title><rect x="927.8" y="533" width="10.1" height="15.0" fill="rgb(214,137,34)" rx="2" ry="2" />
+<text  x="930.78" y="543.5" ></text>
+</g>
+<g >
+<title>MainThread`_get_spec (2 samples, 1.71%)</title><rect x="937.9" y="325" width="20.1" height="15.0" fill="rgb(227,189,6)" rx="2" ry="2" />
+<text  x="940.86" y="335.5" ></text>
+</g>
+<g >
+<title>MainThread`_get_configdir (1 samples, 0.85%)</title><rect x="322.6" y="373" width="10.1" height="15.0" fill="rgb(254,87,28)" rx="2" ry="2" />
+<text  x="325.65" y="383.5" ></text>
+</g>
+<g >
+<title>MainThread`find_spec (1 samples, 0.85%)</title><rect x="1149.7" y="1365" width="10.0" height="15.0" fill="rgb(219,132,35)" rx="2" ry="2" />
+<text  x="1152.66" y="1375.5" ></text>
+</g>
+<g >
+<title>MainThread`_path_isfile (1 samples, 0.85%)</title><rect x="40.3" y="1077" width="10.0" height="15.0" fill="rgb(215,35,50)" rx="2" ry="2" />
+<text  x="43.26" y="1087.5" ></text>
+</g>
+<g >
+<title>MainThread`exec_module (1 samples, 0.85%)</title><rect x="1028.6" y="453" width="10.1" height="15.0" fill="rgb(209,34,3)" rx="2" ry="2" />
+<text  x="1031.63" y="463.5" ></text>
+</g>
+<g >
+<title>MainThread`find_spec (1 samples, 0.85%)</title><rect x="120.9" y="837" width="10.1" height="15.0" fill="rgb(246,56,45)" rx="2" ry="2" />
+<text  x="123.94" y="847.5" ></text>
+</g>
+<g >
+<title>MainThread`find_spec (1 samples, 0.85%)</title><rect x="1149.7" y="1333" width="10.0" height="15.0" fill="rgb(242,38,29)" rx="2" ry="2" />
+<text  x="1152.66" y="1343.5" ></text>
+</g>
+<g >
+<title>MainThread`_load_unlocked (14 samples, 11.97%)</title><rect x="262.1" y="997" width="141.2" height="15.0" fill="rgb(217,94,8)" rx="2" ry="2" />
+<text  x="265.14" y="1007.5" >MainThread`_load_..</text>
+</g>
+<g >
+<title>MainThread`_fill_cache (1 samples, 0.85%)</title><rect x="1018.5" y="533" width="10.1" height="15.0" fill="rgb(229,26,49)" rx="2" ry="2" />
+<text  x="1021.55" y="543.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_and_load_unlocked (7 samples, 5.98%)</title><rect x="978.2" y="805" width="70.6" height="15.0" fill="rgb(217,10,28)" rx="2" ry="2" />
+<text  x="981.21" y="815.5" >MainThr..</text>
+</g>
+<g >
+<title>MainThread`_load_unlocked (25 samples, 21.37%)</title><rect x="857.2" y="1253" width="252.1" height="15.0" fill="rgb(225,151,18)" rx="2" ry="2" />
+<text  x="860.18" y="1263.5" >MainThread`_load_unlocked</text>
+</g>
+<g >
+<title>MainThread`&lt;module&gt; (1 samples, 0.85%)</title><rect x="201.6" y="725" width="10.1" height="15.0" fill="rgb(230,87,12)" rx="2" ry="2" />
+<text  x="204.62" y="735.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_and_load (1 samples, 0.85%)</title><rect x="312.6" y="293" width="10.0" height="15.0" fill="rgb(229,186,46)" rx="2" ry="2" />
+<text  x="315.56" y="303.5" ></text>
+</g>
+<g >
+<title>MainThread`_load_unlocked (1 samples, 0.85%)</title><rect x="201.6" y="677" width="10.1" height="15.0" fill="rgb(235,68,3)" rx="2" ry="2" />
+<text  x="204.62" y="687.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_and_load (2 samples, 1.71%)</title><rect x="332.7" y="469" width="20.2" height="15.0" fill="rgb(222,128,26)" rx="2" ry="2" />
+<text  x="335.74" y="479.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_and_load_unlocked (1 samples, 0.85%)</title><rect x="423.5" y="917" width="10.1" height="15.0" fill="rgb(217,218,43)" rx="2" ry="2" />
+<text  x="426.50" y="927.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_and_load (1 samples, 0.85%)</title><rect x="917.7" y="389" width="10.1" height="15.0" fill="rgb(244,92,1)" rx="2" ry="2" />
+<text  x="920.69" y="399.5" ></text>
+</g>
+<g >
+<title>MainThread`_get_spec (2 samples, 1.71%)</title><rect x="1119.4" y="1221" width="20.2" height="15.0" fill="rgb(209,2,23)" rx="2" ry="2" />
+<text  x="1122.40" y="1231.5" ></text>
+</g>
+<g >
+<title>MainThread`_load_unlocked (26 samples, 22.22%)</title><rect x="514.3" y="901" width="262.2" height="15.0" fill="rgb(221,84,0)" rx="2" ry="2" />
+<text  x="517.27" y="911.5" >MainThread`_load_unlocked</text>
+</g>
+<g >
+<title>MainThread`find_spec (1 samples, 0.85%)</title><rect x="90.7" y="677" width="10.1" height="15.0" fill="rgb(250,83,45)" rx="2" ry="2" />
+<text  x="93.68" y="687.5" ></text>
+</g>
+<g >
+<title>MainThread`_path_is_mode_type (1 samples, 0.85%)</title><rect x="70.5" y="869" width="10.1" height="15.0" fill="rgb(218,87,45)" rx="2" ry="2" />
+<text  x="73.51" y="879.5" ></text>
+</g>
+<g >
+<title>MainThread`_path_isfile (1 samples, 0.85%)</title><rect x="272.2" y="421" width="10.1" height="15.0" fill="rgb(213,66,24)" rx="2" ry="2" />
+<text  x="275.22" y="431.5" ></text>
+</g>
+<g >
+<title>MainThread`get_code (1 samples, 0.85%)</title><rect x="1089.1" y="1125" width="10.1" height="15.0" fill="rgb(247,170,8)" rx="2" ry="2" />
+<text  x="1092.15" y="1135.5" ></text>
+</g>
+<g >
+<title>MainThread`_get_spec (3 samples, 2.56%)</title><rect x="1048.8" y="933" width="30.3" height="15.0" fill="rgb(254,14,15)" rx="2" ry="2" />
+<text  x="1051.80" y="943.5" >Ma..</text>
+</g>
+<g >
+<title>MainThread`find_spec (1 samples, 0.85%)</title><rect x="776.5" y="917" width="10.1" height="15.0" fill="rgb(229,228,48)" rx="2" ry="2" />
+<text  x="779.50" y="927.5" ></text>
+</g>
+<g >
+<title>MainThread`exec_module (18 samples, 15.38%)</title><rect x="242.0" y="1077" width="181.5" height="15.0" fill="rgb(210,100,29)" rx="2" ry="2" />
+<text  x="244.97" y="1087.5" >MainThread`exec_module</text>
+</g>
+<g >
+<title>MainThread`_call_with_frames_removed (3 samples, 2.56%)</title><rect x="897.5" y="645" width="30.3" height="15.0" fill="rgb(232,73,15)" rx="2" ry="2" />
+<text  x="900.52" y="655.5" >Ma..</text>
+</g>
+<g >
+<title>MainThread`_path_importer_cache (1 samples, 0.85%)</title><rect x="494.1" y="949" width="10.1" height="15.0" fill="rgb(239,100,37)" rx="2" ry="2" />
+<text  x="497.10" y="959.5" ></text>
+</g>
+<g >
+<title>MainThread`create_module (29 samples, 24.79%)</title><rect x="494.1" y="1061" width="292.5" height="15.0" fill="rgb(244,101,46)" rx="2" ry="2" />
+<text  x="497.10" y="1071.5" >MainThread`create_module</text>
+</g>
+<g >
+<title>MainThread`_load_unlocked (26 samples, 22.22%)</title><rect x="514.3" y="805" width="262.2" height="15.0" fill="rgb(230,29,47)" rx="2" ry="2" />
+<text  x="517.27" y="815.5" >MainThread`_load_unlocked</text>
+</g>
+<g >
+<title>MainThread`find_spec (1 samples, 0.85%)</title><rect x="917.7" y="341" width="10.1" height="15.0" fill="rgb(209,4,36)" rx="2" ry="2" />
+<text  x="920.69" y="351.5" ></text>
+</g>
+<g >
+<title>MainThread`_get_spec (1 samples, 0.85%)</title><rect x="1018.5" y="565" width="10.1" height="15.0" fill="rgb(222,203,38)" rx="2" ry="2" />
+<text  x="1021.55" y="575.5" ></text>
+</g>
+<g >
+<title>MainThread`&lt;module&gt; (25 samples, 21.37%)</title><rect x="857.2" y="1205" width="252.1" height="15.0" fill="rgb(217,154,7)" rx="2" ry="2" />
+<text  x="860.18" y="1215.5" >MainThread`&lt;module&gt;</text>
+</g>
+<g >
+<title>MainThread`_handle_fromlist (1 samples, 0.85%)</title><rect x="90.7" y="885" width="10.1" height="15.0" fill="rgb(253,167,16)" rx="2" ry="2" />
+<text  x="93.68" y="895.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_and_load (2 samples, 1.71%)</title><rect x="373.1" y="741" width="20.1" height="15.0" fill="rgb(211,85,26)" rx="2" ry="2" />
+<text  x="376.08" y="751.5" ></text>
+</g>
+<g >
+<title>MainThread`_get_spec (1 samples, 0.85%)</title><rect x="161.3" y="645" width="10.1" height="15.0" fill="rgb(246,45,39)" rx="2" ry="2" />
+<text  x="164.28" y="655.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_and_load (1 samples, 0.85%)</title><rect x="1028.6" y="501" width="10.1" height="15.0" fill="rgb(248,200,45)" rx="2" ry="2" />
+<text  x="1031.63" y="511.5" ></text>
+</g>
+<g >
+<title>MainThread`_fill_cache (1 samples, 0.85%)</title><rect x="252.1" y="933" width="10.0" height="15.0" fill="rgb(217,139,38)" rx="2" ry="2" />
+<text  x="255.05" y="943.5" ></text>
+</g>
+<g >
+<title>MainThread`find_spec (1 samples, 0.85%)</title><rect x="332.7" y="389" width="10.1" height="15.0" fill="rgb(219,50,28)" rx="2" ry="2" />
+<text  x="335.74" y="399.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_and_load (2 samples, 1.71%)</title><rect x="1008.5" y="629" width="20.1" height="15.0" fill="rgb(238,82,34)" rx="2" ry="2" />
+<text  x="1011.46" y="639.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_and_load (20 samples, 17.09%)</title><rect x="887.4" y="997" width="201.7" height="15.0" fill="rgb(241,93,38)" rx="2" ry="2" />
+<text  x="890.44" y="1007.5" >MainThread`_find_and_load</text>
+</g>
+<g >
+<title>MainThread`_path_is_mode_type (1 samples, 0.85%)</title><rect x="30.2" y="1125" width="10.1" height="15.0" fill="rgb(214,217,22)" rx="2" ry="2" />
+<text  x="33.17" y="1135.5" ></text>
+</g>
+<g >
+<title>MainThread`_call_with_frames_removed (6 samples, 5.13%)</title><rect x="161.3" y="1285" width="60.5" height="15.0" fill="rgb(236,57,20)" rx="2" ry="2" />
+<text  x="164.28" y="1295.5" >MainTh..</text>
+</g>
+<g >
+<title>MainThread`_get_spec (2 samples, 1.71%)</title><rect x="141.1" y="1349" width="20.2" height="15.0" fill="rgb(234,130,43)" rx="2" ry="2" />
+<text  x="144.11" y="1359.5" ></text>
+</g>
+<g >
+<title>MainThread`_call_with_frames_removed (2 samples, 1.71%)</title><rect x="110.9" y="1173" width="20.1" height="15.0" fill="rgb(216,217,7)" rx="2" ry="2" />
+<text  x="113.85" y="1183.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_and_load_unlocked (112 samples, 95.73%)</title><rect x="10.0" y="1493" width="1129.6" height="15.0" fill="rgb(240,100,53)" rx="2" ry="2" />
+<text  x="13.00" y="1503.5" >MainThread`_find_and_load_unlocked</text>
+</g>
+<g >
+<title>MainThread`&lt;module&gt; (1 samples, 0.85%)</title><rect x="201.6" y="965" width="10.1" height="15.0" fill="rgb(222,187,30)" rx="2" ry="2" />
+<text  x="204.62" y="975.5" ></text>
+</g>
+<g >
+<title>MainThread`module_from_spec (27 samples, 23.08%)</title><rect x="504.2" y="981" width="272.3" height="15.0" fill="rgb(242,72,4)" rx="2" ry="2" />
+<text  x="507.19" y="991.5" >MainThread`module_from_spec</text>
+</g>
+<g >
+<title>MainThread`exec_module (6 samples, 5.13%)</title><rect x="161.3" y="1221" width="60.5" height="15.0" fill="rgb(252,199,30)" rx="2" ry="2" />
+<text  x="164.28" y="1231.5" >MainTh..</text>
+</g>
+<g >
+<title>MainThread`_find_and_load (1 samples, 0.85%)</title><rect x="161.3" y="805" width="10.1" height="15.0" fill="rgb(237,90,5)" rx="2" ry="2" />
+<text  x="164.28" y="815.5" ></text>
+</g>
+<g >
+<title>MainThread`_path_isfile (1 samples, 0.85%)</title><rect x="796.7" y="1013" width="10.1" height="15.0" fill="rgb(226,46,13)" rx="2" ry="2" />
+<text  x="799.67" y="1023.5" ></text>
+</g>
+<g >
+<title>MainThread`_load_unlocked (54 samples, 46.15%)</title><rect x="242.0" y="1189" width="544.6" height="15.0" fill="rgb(216,192,12)" rx="2" ry="2" />
+<text  x="244.97" y="1199.5" >MainThread`_load_unlocked</text>
+</g>
+<g >
+<title>MainThread`_find_and_load_unlocked (1 samples, 0.85%)</title><rect x="1028.6" y="581" width="10.1" height="15.0" fill="rgb(239,67,54)" rx="2" ry="2" />
+<text  x="1031.63" y="591.5" ></text>
+</g>
+<g >
+<title>MainThread`get_data (2 samples, 1.71%)</title><rect x="181.5" y="901" width="20.1" height="15.0" fill="rgb(205,150,50)" rx="2" ry="2" />
+<text  x="184.45" y="911.5" ></text>
+</g>
+<g >
+<title>MainThread`_path_is_mode_type (1 samples, 0.85%)</title><rect x="110.9" y="997" width="10.0" height="15.0" fill="rgb(219,180,26)" rx="2" ry="2" />
+<text  x="113.85" y="1007.5" ></text>
+</g>
+<g >
+<title>MainThread`_load_unlocked (4 samples, 3.42%)</title><rect x="363.0" y="901" width="40.3" height="15.0" fill="rgb(220,19,19)" rx="2" ry="2" />
+<text  x="365.99" y="911.5" >Mai..</text>
+</g>
+<g >
+<title>MainThread`_call_with_frames_removed (16 samples, 13.68%)</title><rect x="887.4" y="885" width="161.4" height="15.0" fill="rgb(221,22,10)" rx="2" ry="2" />
+<text  x="890.44" y="895.5" >MainThread`_call_wit..</text>
+</g>
+<g >
+<title>MainThread`find_spec (2 samples, 1.71%)</title><rect x="141.1" y="1333" width="20.2" height="15.0" fill="rgb(218,10,6)" rx="2" ry="2" />
+<text  x="144.11" y="1343.5" ></text>
+</g>
+<g >
+<title>MainThread`find_spec (1 samples, 0.85%)</title><rect x="776.5" y="949" width="10.1" height="15.0" fill="rgb(252,9,33)" rx="2" ry="2" />
+<text  x="779.50" y="959.5" ></text>
+</g>
+<g >
+<title>MainThread`find_spec (1 samples, 0.85%)</title><rect x="171.4" y="837" width="10.1" height="15.0" fill="rgb(235,163,6)" rx="2" ry="2" />
+<text  x="174.37" y="847.5" ></text>
+</g>
+<g >
+<title>MainThread`get_data (1 samples, 0.85%)</title><rect x="342.8" y="165" width="10.1" height="15.0" fill="rgb(251,48,29)" rx="2" ry="2" />
+<text  x="345.82" y="175.5" ></text>
+</g>
+<g >
+<title>MainThread`find_spec (1 samples, 0.85%)</title><rect x="796.7" y="1061" width="10.1" height="15.0" fill="rgb(223,44,35)" rx="2" ry="2" />
+<text  x="799.67" y="1071.5" ></text>
+</g>
+<g >
+<title>MainThread`_path_isfile (1 samples, 0.85%)</title><rect x="141.1" y="1317" width="10.1" height="15.0" fill="rgb(216,200,21)" rx="2" ry="2" />
+<text  x="144.11" y="1327.5" ></text>
+</g>
+<g >
+<title>MainThread`exec_module (4 samples, 3.42%)</title><rect x="998.4" y="773" width="40.3" height="15.0" fill="rgb(239,185,41)" rx="2" ry="2" />
+<text  x="1001.38" y="783.5" >Mai..</text>
+</g>
+<g >
+<title>MainThread`find_spec (3 samples, 2.56%)</title><rect x="1048.8" y="917" width="30.3" height="15.0" fill="rgb(252,223,26)" rx="2" ry="2" />
+<text  x="1051.80" y="927.5" >Ma..</text>
+</g>
+<g >
+<title>MainThread`_find_and_load (1 samples, 0.85%)</title><rect x="403.3" y="901" width="10.1" height="15.0" fill="rgb(235,64,47)" rx="2" ry="2" />
+<text  x="406.33" y="911.5" ></text>
+</g>
+<g >
+<title>MainThread`_call_with_frames_removed (1 samples, 0.85%)</title><rect x="302.5" y="261" width="10.1" height="15.0" fill="rgb(210,217,2)" rx="2" ry="2" />
+<text  x="305.48" y="271.5" ></text>
+</g>
+<g >
+<title>MainThread`_call_with_frames_removed (1 samples, 0.85%)</title><rect x="161.3" y="741" width="10.1" height="15.0" fill="rgb(212,37,2)" rx="2" ry="2" />
+<text  x="164.28" y="751.5" ></text>
+</g>
+<g >
+<title>MainThread`extract (1 samples, 0.85%)</title><rect x="302.5" y="53" width="10.1" height="15.0" fill="rgb(210,100,45)" rx="2" ry="2" />
+<text  x="305.48" y="63.5" ></text>
+</g>
+<g >
+<title>MainThread`path_stats (1 samples, 0.85%)</title><rect x="453.8" y="1141" width="10.0" height="15.0" fill="rgb(228,199,34)" rx="2" ry="2" />
+<text  x="456.76" y="1151.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_and_load (1 samples, 0.85%)</title><rect x="1099.2" y="1157" width="10.1" height="15.0" fill="rgb(254,111,51)" rx="2" ry="2" />
+<text  x="1102.23" y="1167.5" ></text>
+</g>
+<g >
+<title>MainThread`exec_module (1 samples, 0.85%)</title><rect x="120.9" y="965" width="10.1" height="15.0" fill="rgb(254,178,28)" rx="2" ry="2" />
+<text  x="123.94" y="975.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_and_load (3 samples, 2.56%)</title><rect x="110.9" y="1237" width="30.2" height="15.0" fill="rgb(240,225,47)" rx="2" ry="2" />
+<text  x="113.85" y="1247.5" >Ma..</text>
+</g>
+<g >
+<title>MainThread`_cython_agg_general (1 samples, 0.85%)</title><rect x="1139.6" y="1493" width="10.1" height="15.0" fill="rgb(254,220,20)" rx="2" ry="2" />
+<text  x="1142.57" y="1503.5" ></text>
+</g>
+<g >
+<title>MainThread`parser_f (3 samples, 2.56%)</title><rect x="1149.7" y="1509" width="30.2" height="15.0" fill="rgb(245,151,10)" rx="2" ry="2" />
+<text  x="1152.66" y="1519.5" >Ma..</text>
+</g>
+<g >
+<title>MainThread`_get_spec (1 samples, 0.85%)</title><rect x="90.7" y="661" width="10.1" height="15.0" fill="rgb(229,126,38)" rx="2" ry="2" />
+<text  x="93.68" y="671.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_and_load (6 samples, 5.13%)</title><rect x="272.2" y="517" width="60.5" height="15.0" fill="rgb(219,31,1)" rx="2" ry="2" />
+<text  x="275.22" y="527.5" >MainTh..</text>
+</g>
+<g >
+<title>MainThread`_find_and_load_unlocked (3 samples, 2.56%)</title><rect x="282.3" y="405" width="30.3" height="15.0" fill="rgb(220,61,14)" rx="2" ry="2" />
+<text  x="285.31" y="415.5" >Ma..</text>
+</g>
+<g >
+<title>MainThread`find (1 samples, 0.85%)</title><rect x="161.3" y="837" width="10.1" height="15.0" fill="rgb(232,108,0)" rx="2" ry="2" />
+<text  x="164.28" y="847.5" ></text>
+</g>
+<g >
+<title>MainThread`_call_with_frames_removed (1 samples, 0.85%)</title><rect x="403.3" y="1013" width="10.1" height="15.0" fill="rgb(244,225,30)" rx="2" ry="2" />
+<text  x="406.33" y="1023.5" ></text>
+</g>
+<g >
+<title>MainThread`_call_with_frames_removed (1 samples, 0.85%)</title><rect x="1028.6" y="437" width="10.1" height="15.0" fill="rgb(250,150,8)" rx="2" ry="2" />
+<text  x="1031.63" y="447.5" ></text>
+</g>
+<g >
+<title>MainThread`take_nd (1 samples, 0.85%)</title><rect x="1139.6" y="1429" width="10.1" height="15.0" fill="rgb(236,204,16)" rx="2" ry="2" />
+<text  x="1142.57" y="1439.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_and_load_unlocked (4 samples, 3.42%)</title><rect x="60.4" y="1061" width="40.4" height="15.0" fill="rgb(229,208,15)" rx="2" ry="2" />
+<text  x="63.43" y="1071.5" >Mai..</text>
+</g>
+<g >
+<title>MainThread`_load_unlocked (6 samples, 5.13%)</title><rect x="161.3" y="1237" width="60.5" height="15.0" fill="rgb(242,12,25)" rx="2" ry="2" />
+<text  x="164.28" y="1247.5" >MainTh..</text>
+</g>
+<g >
+<title>MainThread`find_spec (1 samples, 0.85%)</title><rect x="363.0" y="757" width="10.1" height="15.0" fill="rgb(237,186,39)" rx="2" ry="2" />
+<text  x="365.99" y="767.5" ></text>
+</g>
+<g >
+<title>MainThread`get_data (4 samples, 3.42%)</title><rect x="806.8" y="1237" width="40.3" height="15.0" fill="rgb(248,176,28)" rx="2" ry="2" />
+<text  x="809.75" y="1247.5" >Mai..</text>
+</g>
+<g >
+<title>MainThread`find_spec (1 samples, 0.85%)</title><rect x="312.6" y="245" width="10.0" height="15.0" fill="rgb(210,138,13)" rx="2" ry="2" />
+<text  x="315.56" y="255.5" ></text>
+</g>
+<g >
+<title>MainThread`find_spec (1 samples, 0.85%)</title><rect x="504.2" y="885" width="10.1" height="15.0" fill="rgb(222,1,46)" rx="2" ry="2" />
+<text  x="507.19" y="895.5" ></text>
+</g>
+<g >
+<title>MainThread`find_spec (1 samples, 0.85%)</title><rect x="403.3" y="805" width="10.1" height="15.0" fill="rgb(254,62,10)" rx="2" ry="2" />
+<text  x="406.33" y="815.5" ></text>
+</g>
+<g >
+<title>MainThread`&lt;module&gt; (14 samples, 11.97%)</title><rect x="262.1" y="949" width="141.2" height="15.0" fill="rgb(218,90,8)" rx="2" ry="2" />
+<text  x="265.14" y="959.5" >MainThread`&lt;module&gt;</text>
+</g>
+<g >
+<title>MainThread`_find_spec (1 samples, 0.85%)</title><rect x="70.5" y="949" width="10.1" height="15.0" fill="rgb(208,199,3)" rx="2" ry="2" />
+<text  x="73.51" y="959.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_and_load (1 samples, 0.85%)</title><rect x="423.5" y="933" width="10.1" height="15.0" fill="rgb(225,151,25)" rx="2" ry="2" />
+<text  x="426.50" y="943.5" ></text>
+</g>
+<g >
+<title>MainThread`_get_spec (2 samples, 1.71%)</title><rect x="897.5" y="453" width="20.2" height="15.0" fill="rgb(219,224,1)" rx="2" ry="2" />
+<text  x="900.52" y="463.5" ></text>
+</g>
+<g >
+<title>MainThread`exec_module (1 samples, 0.85%)</title><rect x="302.5" y="277" width="10.1" height="15.0" fill="rgb(238,29,39)" rx="2" ry="2" />
+<text  x="305.48" y="287.5" ></text>
+</g>
+<g >
+<title>MainThread`exec_module (12 samples, 10.26%)</title><rect x="20.1" y="1317" width="121.0" height="15.0" fill="rgb(245,116,4)" rx="2" ry="2" />
+<text  x="23.09" y="1327.5" >MainThread`exec..</text>
+</g>
+<g >
+<title>MainThread`_find_and_load_unlocked (1 samples, 0.85%)</title><rect x="1008.5" y="565" width="10.0" height="15.0" fill="rgb(212,200,33)" rx="2" ry="2" />
+<text  x="1011.46" y="575.5" ></text>
+</g>
+<g >
+<title>MainThread`&lt;module&gt; (112 samples, 95.73%)</title><rect x="10.0" y="1429" width="1129.6" height="15.0" fill="rgb(235,160,34)" rx="2" ry="2" />
+<text  x="13.00" y="1439.5" >MainThread`&lt;module&gt;</text>
+</g>
+<g >
+<title>MainThread`exec_module (1 samples, 0.85%)</title><rect x="302.5" y="181" width="10.1" height="15.0" fill="rgb(219,10,25)" rx="2" ry="2" />
+<text  x="305.48" y="191.5" ></text>
+</g>
+<g >
+<title>MainThread`exec_module (3 samples, 2.56%)</title><rect x="1008.5" y="677" width="30.2" height="15.0" fill="rgb(247,187,46)" rx="2" ry="2" />
+<text  x="1011.46" y="687.5" >Ma..</text>
+</g>
+<g >
+<title>MainThread`get_data (1 samples, 0.85%)</title><rect x="393.2" y="757" width="10.1" height="15.0" fill="rgb(206,65,19)" rx="2" ry="2" />
+<text  x="396.25" y="767.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_and_load (3 samples, 2.56%)</title><rect x="282.3" y="421" width="30.3" height="15.0" fill="rgb(209,184,47)" rx="2" ry="2" />
+<text  x="285.31" y="431.5" >Ma..</text>
+</g>
+<g >
+<title>MainThread`_find_and_load_unlocked (5 samples, 4.27%)</title><rect x="927.8" y="661" width="50.4" height="15.0" fill="rgb(232,54,34)" rx="2" ry="2" />
+<text  x="930.78" y="671.5" >MainT..</text>
+</g>
+<g >
+<title>MainThread`_load_unlocked (1 samples, 0.85%)</title><rect x="1079.1" y="965" width="10.0" height="15.0" fill="rgb(213,60,43)" rx="2" ry="2" />
+<text  x="1082.06" y="975.5" ></text>
+</g>
+<g >
+<title>MainThread`_call_with_frames_removed (13 samples, 11.11%)</title><rect x="10.0" y="1381" width="131.1" height="15.0" fill="rgb(245,12,47)" rx="2" ry="2" />
+<text  x="13.00" y="1391.5" >MainThread`_call..</text>
+</g>
+<g >
+<title>MainThread`_load_unlocked (4 samples, 3.42%)</title><rect x="937.9" y="453" width="40.3" height="15.0" fill="rgb(227,1,31)" rx="2" ry="2" />
+<text  x="940.86" y="463.5" >Mai..</text>
+</g>
+<g >
+<title>MainThread`_find_and_load (1 samples, 0.85%)</title><rect x="242.0" y="981" width="10.1" height="15.0" fill="rgb(217,58,8)" rx="2" ry="2" />
+<text  x="244.97" y="991.5" ></text>
+</g>
+<g >
+<title>MainThread`&lt;module&gt; (4 samples, 3.42%)</title><rect x="937.9" y="501" width="40.3" height="15.0" fill="rgb(234,187,53)" rx="2" ry="2" />
+<text  x="940.86" y="511.5" >Mai..</text>
+</g>
+<g >
+<title>MainThread`_path_importer_cache (1 samples, 0.85%)</title><rect x="1119.4" y="1205" width="10.1" height="15.0" fill="rgb(248,126,17)" rx="2" ry="2" />
+<text  x="1122.40" y="1215.5" ></text>
+</g>
+<g >
+<title>MainThread`exec_module (3 samples, 2.56%)</title><rect x="110.9" y="1189" width="30.2" height="15.0" fill="rgb(239,121,1)" rx="2" ry="2" />
+<text  x="113.85" y="1199.5" >Ma..</text>
+</g>
+<g >
+<title>MainThread`find_spec (2 samples, 1.71%)</title><rect x="221.8" y="1237" width="20.2" height="15.0" fill="rgb(222,209,26)" rx="2" ry="2" />
+<text  x="224.79" y="1247.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_spec (1 samples, 0.85%)</title><rect x="857.2" y="1157" width="10.1" height="15.0" fill="rgb(249,188,20)" rx="2" ry="2" />
+<text  x="860.18" y="1167.5" ></text>
+</g>
+<g >
+<title>MainThread`exec_module (8 samples, 6.84%)</title><rect x="272.2" y="837" width="80.7" height="15.0" fill="rgb(213,41,38)" rx="2" ry="2" />
+<text  x="275.22" y="847.5" >MainThrea..</text>
+</g>
+<g >
+<title>MainThread`_find_and_load (1 samples, 0.85%)</title><rect x="403.3" y="853" width="10.1" height="15.0" fill="rgb(242,19,49)" rx="2" ry="2" />
+<text  x="406.33" y="863.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_and_load_unlocked (13 samples, 11.11%)</title><rect x="10.0" y="1349" width="131.1" height="15.0" fill="rgb(213,50,33)" rx="2" ry="2" />
+<text  x="13.00" y="1359.5" >MainThread`_find..</text>
+</g>
+<g >
+<title>MainThread`_path_isfile (1 samples, 0.85%)</title><rect x="161.3" y="613" width="10.1" height="15.0" fill="rgb(220,170,50)" rx="2" ry="2" />
+<text  x="164.28" y="623.5" ></text>
+</g>
+<g >
+<title>MainThread`find_spec (2 samples, 1.71%)</title><rect x="897.5" y="469" width="20.2" height="15.0" fill="rgb(244,147,29)" rx="2" ry="2" />
+<text  x="900.52" y="479.5" ></text>
+</g>
+<g >
+<title>MainThread`exec_module (1 samples, 0.85%)</title><rect x="80.6" y="837" width="10.1" height="15.0" fill="rgb(231,60,39)" rx="2" ry="2" />
+<text  x="83.60" y="847.5" ></text>
+</g>
+<g >
+<title>MainThread`_path_stat (1 samples, 0.85%)</title><rect x="50.3" y="1077" width="10.1" height="15.0" fill="rgb(237,210,11)" rx="2" ry="2" />
+<text  x="53.34" y="1087.5" ></text>
+</g>
+<g >
+<title>MainThread`_get_spec (1 samples, 0.85%)</title><rect x="70.5" y="917" width="10.1" height="15.0" fill="rgb(236,172,10)" rx="2" ry="2" />
+<text  x="73.51" y="927.5" ></text>
+</g>
+<g >
+<title>MainThread`_call_with_frames_removed (3 samples, 2.56%)</title><rect x="897.5" y="549" width="30.3" height="15.0" fill="rgb(208,12,8)" rx="2" ry="2" />
+<text  x="900.52" y="559.5" >Ma..</text>
+</g>
+<g >
+<title>MainThread`_find_spec (1 samples, 0.85%)</title><rect x="917.7" y="357" width="10.1" height="15.0" fill="rgb(234,178,3)" rx="2" ry="2" />
+<text  x="920.69" y="367.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_spec (1 samples, 0.85%)</title><rect x="352.9" y="901" width="10.1" height="15.0" fill="rgb(234,74,39)" rx="2" ry="2" />
+<text  x="355.91" y="911.5" ></text>
+</g>
+<g >
+<title>MainThread`_load_unlocked (2 samples, 1.71%)</title><rect x="80.6" y="949" width="20.2" height="15.0" fill="rgb(250,131,53)" rx="2" ry="2" />
+<text  x="83.60" y="959.5" ></text>
+</g>
+<g >
+<title>MainThread`find_spec (1 samples, 0.85%)</title><rect x="998.4" y="645" width="10.1" height="15.0" fill="rgb(216,78,44)" rx="2" ry="2" />
+<text  x="1001.38" y="655.5" ></text>
+</g>
+<g >
+<title>MainThread`&lt;module&gt; (17 samples, 14.53%)</title><rect x="242.0" y="1045" width="171.4" height="15.0" fill="rgb(231,168,38)" rx="2" ry="2" />
+<text  x="244.97" y="1055.5" >MainThread`&lt;module&gt;</text>
+</g>
+<g >
+<title>MainThread`&lt;module&gt; (1 samples, 0.85%)</title><rect x="90.7" y="773" width="10.1" height="15.0" fill="rgb(212,0,49)" rx="2" ry="2" />
+<text  x="93.68" y="783.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_spec (1 samples, 0.85%)</title><rect x="373.1" y="613" width="10.1" height="15.0" fill="rgb(243,158,45)" rx="2" ry="2" />
+<text  x="376.08" y="623.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_and_load_unlocked (14 samples, 11.97%)</title><rect x="262.1" y="917" width="141.2" height="15.0" fill="rgb(236,163,49)" rx="2" ry="2" />
+<text  x="265.14" y="927.5" >MainThread`_find_..</text>
+</g>
+<g >
+<title>MainThread`_fill_cache (1 samples, 0.85%)</title><rect x="1149.7" y="1317" width="10.0" height="15.0" fill="rgb(227,17,31)" rx="2" ry="2" />
+<text  x="1152.66" y="1327.5" ></text>
+</g>
+<g >
+<title>MainThread`exec_module (5 samples, 4.27%)</title><rect x="60.4" y="1125" width="50.5" height="15.0" fill="rgb(239,41,24)" rx="2" ry="2" />
+<text  x="63.43" y="1135.5" >MainT..</text>
+</g>
+<g >
+<title>MainThread`exec_module (2 samples, 1.71%)</title><rect x="958.0" y="341" width="20.2" height="15.0" fill="rgb(216,10,54)" rx="2" ry="2" />
+<text  x="961.03" y="351.5" ></text>
+</g>
+<g >
+<title>MainThread`_path_stat (1 samples, 0.85%)</title><rect x="403.3" y="757" width="10.1" height="15.0" fill="rgb(231,18,54)" rx="2" ry="2" />
+<text  x="406.33" y="767.5" ></text>
+</g>
+<g >
+<title>MainThread`_path_stat (2 samples, 1.71%)</title><rect x="978.2" y="693" width="20.2" height="15.0" fill="rgb(225,198,45)" rx="2" ry="2" />
+<text  x="981.21" y="703.5" ></text>
+</g>
+<g >
+<title>MainThread`_load_unlocked (8 samples, 6.84%)</title><rect x="272.2" y="629" width="80.7" height="15.0" fill="rgb(239,12,37)" rx="2" ry="2" />
+<text  x="275.22" y="639.5" >MainThrea..</text>
+</g>
+<g >
+<title>MainThread`_run_code (117 samples, 100.00%)</title><rect x="10.0" y="1573" width="1180.0" height="15.0" fill="rgb(240,55,53)" rx="2" ry="2" />
+<text  x="13.00" y="1583.5" >MainThread`_run_code</text>
+</g>
+<g >
+<title>MainThread`&lt;module&gt; (2 samples, 1.71%)</title><rect x="161.3" y="901" width="20.2" height="15.0" fill="rgb(225,20,5)" rx="2" ry="2" />
+<text  x="164.28" y="911.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_and_load_unlocked (2 samples, 1.71%)</title><rect x="1119.4" y="1365" width="20.2" height="15.0" fill="rgb(224,134,42)" rx="2" ry="2" />
+<text  x="1122.40" y="1375.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_and_load (4 samples, 3.42%)</title><rect x="161.3" y="1077" width="40.3" height="15.0" fill="rgb(233,64,31)" rx="2" ry="2" />
+<text  x="164.28" y="1087.5" >Mai..</text>
+</g>
+<g >
+<title>MainThread`find_spec (1 samples, 0.85%)</title><rect x="332.7" y="421" width="10.1" height="15.0" fill="rgb(208,158,1)" rx="2" ry="2" />
+<text  x="335.74" y="431.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_spec (1 samples, 0.85%)</title><rect x="887.4" y="773" width="10.1" height="15.0" fill="rgb(205,210,3)" rx="2" ry="2" />
+<text  x="890.44" y="783.5" ></text>
+</g>
+<g >
+<title>MainThread`_call_with_frames_removed (6 samples, 5.13%)</title><rect x="161.3" y="1205" width="60.5" height="15.0" fill="rgb(230,123,29)" rx="2" ry="2" />
+<text  x="164.28" y="1215.5" >MainTh..</text>
+</g>
+<g >
+<title>MainThread`find_spec (1 samples, 0.85%)</title><rect x="312.6" y="213" width="10.0" height="15.0" fill="rgb(217,107,29)" rx="2" ry="2" />
+<text  x="315.56" y="223.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_and_load_unlocked (1 samples, 0.85%)</title><rect x="201.6" y="789" width="10.1" height="15.0" fill="rgb(248,181,30)" rx="2" ry="2" />
+<text  x="204.62" y="799.5" ></text>
+</g>
+<g >
+<title>MainThread`find_spec (1 samples, 0.85%)</title><rect x="1129.5" y="1205" width="10.1" height="15.0" fill="rgb(236,116,19)" rx="2" ry="2" />
+<text  x="1132.49" y="1215.5" ></text>
+</g>
+<g >
+<title>MainThread`get_data (1 samples, 0.85%)</title><rect x="1109.3" y="1333" width="10.1" height="15.0" fill="rgb(210,217,53)" rx="2" ry="2" />
+<text  x="1112.32" y="1343.5" ></text>
+</g>
+<g >
+<title>MainThread`_path_stat (1 samples, 0.85%)</title><rect x="332.7" y="373" width="10.1" height="15.0" fill="rgb(223,108,20)" rx="2" ry="2" />
+<text  x="335.74" y="383.5" ></text>
+</g>
+<g >
+<title>MainThread`find_spec (2 samples, 1.71%)</title><rect x="1119.4" y="1237" width="20.2" height="15.0" fill="rgb(246,13,44)" rx="2" ry="2" />
+<text  x="1122.40" y="1247.5" ></text>
+</g>
+<g >
+<title>MainThread`_handle_fromlist (1 samples, 0.85%)</title><rect x="1028.6" y="629" width="10.1" height="15.0" fill="rgb(217,0,13)" rx="2" ry="2" />
+<text  x="1031.63" y="639.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_spec (3 samples, 2.56%)</title><rect x="463.8" y="1093" width="30.3" height="15.0" fill="rgb(217,104,18)" rx="2" ry="2" />
+<text  x="466.85" y="1103.5" >Ma..</text>
+</g>
+<g >
+<title>MainThread`_path_stat (1 samples, 0.85%)</title><rect x="453.8" y="1125" width="10.0" height="15.0" fill="rgb(243,36,44)" rx="2" ry="2" />
+<text  x="456.76" y="1135.5" ></text>
+</g>
+<g >
+<title>MainThread`_call_with_frames_removed (4 samples, 3.42%)</title><rect x="937.9" y="613" width="40.3" height="15.0" fill="rgb(208,219,14)" rx="2" ry="2" />
+<text  x="940.86" y="623.5" >Mai..</text>
+</g>
+<g >
+<title>MainThread`_call_with_frames_removed (1 samples, 0.85%)</title><rect x="1038.7" y="741" width="10.1" height="15.0" fill="rgb(234,187,15)" rx="2" ry="2" />
+<text  x="1041.72" y="751.5" ></text>
+</g>
+<g >
+<title>MainThread`get_numeric_data (1 samples, 0.85%)</title><rect x="1139.6" y="1461" width="10.1" height="15.0" fill="rgb(225,27,20)" rx="2" ry="2" />
+<text  x="1142.57" y="1471.5" ></text>
+</g>
+<g >
+<title>MainThread`_handle_fromlist (1 samples, 0.85%)</title><rect x="342.8" y="373" width="10.1" height="15.0" fill="rgb(214,120,10)" rx="2" ry="2" />
+<text  x="345.82" y="383.5" ></text>
+</g>
+<g >
+<title>MainThread`&lt;module&gt; (94 samples, 80.34%)</title><rect x="161.3" y="1333" width="948.0" height="15.0" fill="rgb(245,225,17)" rx="2" ry="2" />
+<text  x="164.28" y="1343.5" >MainThread`&lt;module&gt;</text>
+</g>
+<g >
+<title>MainThread`_path_stat (1 samples, 0.85%)</title><rect x="70.5" y="853" width="10.1" height="15.0" fill="rgb(227,195,25)" rx="2" ry="2" />
+<text  x="73.51" y="863.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_and_load_unlocked (1 samples, 0.85%)</title><rect x="90.7" y="837" width="10.1" height="15.0" fill="rgb(220,5,24)" rx="2" ry="2" />
+<text  x="93.68" y="847.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_spec (1 samples, 0.85%)</title><rect x="1149.7" y="1381" width="10.0" height="15.0" fill="rgb(225,211,23)" rx="2" ry="2" />
+<text  x="1152.66" y="1391.5" ></text>
+</g>
+<g >
+<title>MainThread`create_module (26 samples, 22.22%)</title><rect x="514.3" y="773" width="262.2" height="15.0" fill="rgb(216,68,3)" rx="2" ry="2" />
+<text  x="517.27" y="783.5" >MainThread`create_module</text>
+</g>
+<g >
+<title>MainThread`find_spec (1 samples, 0.85%)</title><rect x="786.6" y="1013" width="10.1" height="15.0" fill="rgb(235,93,16)" rx="2" ry="2" />
+<text  x="789.58" y="1023.5" ></text>
+</g>
+<g >
+<title>MainThread`module_from_spec (1 samples, 0.85%)</title><rect x="786.6" y="1141" width="10.1" height="15.0" fill="rgb(238,39,24)" rx="2" ry="2" />
+<text  x="789.58" y="1151.5" ></text>
+</g>
+<g >
+<title>MainThread`_handle_fromlist (1 samples, 0.85%)</title><rect x="201.6" y="1077" width="10.1" height="15.0" fill="rgb(235,74,33)" rx="2" ry="2" />
+<text  x="204.62" y="1087.5" ></text>
+</g>
+<g >
+<title>MainThread`find_spec (1 samples, 0.85%)</title><rect x="161.3" y="661" width="10.1" height="15.0" fill="rgb(229,86,4)" rx="2" ry="2" />
+<text  x="164.28" y="671.5" ></text>
+</g>
+<g >
+<title>MainThread`_call_with_frames_removed (1 samples, 0.85%)</title><rect x="120.9" y="949" width="10.1" height="15.0" fill="rgb(245,210,15)" rx="2" ry="2" />
+<text  x="123.94" y="959.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_and_load_unlocked (1 samples, 0.85%)</title><rect x="80.6" y="773" width="10.1" height="15.0" fill="rgb(232,65,39)" rx="2" ry="2" />
+<text  x="83.60" y="783.5" ></text>
+</g>
+<g >
+<title>MainThread`_path_isfile (1 samples, 0.85%)</title><rect x="262.1" y="789" width="10.1" height="15.0" fill="rgb(234,70,50)" rx="2" ry="2" />
+<text  x="265.14" y="799.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_and_load_unlocked (1 samples, 0.85%)</title><rect x="201.6" y="933" width="10.1" height="15.0" fill="rgb(213,195,20)" rx="2" ry="2" />
+<text  x="204.62" y="943.5" ></text>
+</g>
+<g >
+<title>MainThread`exec_module (5 samples, 4.27%)</title><rect x="282.3" y="469" width="50.4" height="15.0" fill="rgb(240,110,21)" rx="2" ry="2" />
+<text  x="285.31" y="479.5" >MainT..</text>
+</g>
+<g >
+<title>MainThread`_find_spec (1 samples, 0.85%)</title><rect x="332.7" y="437" width="10.1" height="15.0" fill="rgb(207,219,5)" rx="2" ry="2" />
+<text  x="335.74" y="447.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_spec (2 samples, 1.71%)</title><rect x="40.3" y="1141" width="20.1" height="15.0" fill="rgb(228,153,15)" rx="2" ry="2" />
+<text  x="43.26" y="1151.5" ></text>
+</g>
+<g >
+<title>MainThread`rc_params (1 samples, 0.85%)</title><rect x="322.6" y="421" width="10.1" height="15.0" fill="rgb(221,21,29)" rx="2" ry="2" />
+<text  x="325.65" y="431.5" ></text>
+</g>
+<g >
+<title>MainThread`_get_spec (1 samples, 0.85%)</title><rect x="796.7" y="1045" width="10.1" height="15.0" fill="rgb(208,122,14)" rx="2" ry="2" />
+<text  x="799.67" y="1055.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_and_load (1 samples, 0.85%)</title><rect x="796.7" y="1157" width="10.1" height="15.0" fill="rgb(232,34,40)" rx="2" ry="2" />
+<text  x="799.67" y="1167.5" ></text>
+</g>
+<g >
+<title>MainThread`_handle_fromlist (2 samples, 1.71%)</title><rect x="1119.4" y="1413" width="20.2" height="15.0" fill="rgb(232,164,36)" rx="2" ry="2" />
+<text  x="1122.40" y="1423.5" ></text>
+</g>
+<g >
+<title>MainThread`_path_is_mode_type (1 samples, 0.85%)</title><rect x="352.9" y="821" width="10.1" height="15.0" fill="rgb(215,204,7)" rx="2" ry="2" />
+<text  x="355.91" y="831.5" ></text>
+</g>
+<g >
+<title>MainThread`_get_spec (1 samples, 0.85%)</title><rect x="927.8" y="613" width="10.1" height="15.0" fill="rgb(225,27,31)" rx="2" ry="2" />
+<text  x="930.78" y="623.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_and_load (54 samples, 46.15%)</title><rect x="242.0" y="1221" width="544.6" height="15.0" fill="rgb(222,68,21)" rx="2" ry="2" />
+<text  x="244.97" y="1231.5" >MainThread`_find_and_load</text>
+</g>
+<g >
+<title>MainThread`_find_and_load (19 samples, 16.24%)</title><rect x="242.0" y="1125" width="191.6" height="15.0" fill="rgb(220,217,9)" rx="2" ry="2" />
+<text  x="244.97" y="1135.5" >MainThread`_find_and_load</text>
+</g>
+<g >
+<title>MainThread`_find_and_load (2 samples, 1.71%)</title><rect x="958.0" y="293" width="20.2" height="15.0" fill="rgb(251,212,54)" rx="2" ry="2" />
+<text  x="961.03" y="303.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_and_load_unlocked (2 samples, 1.71%)</title><rect x="373.1" y="725" width="20.1" height="15.0" fill="rgb(234,38,18)" rx="2" ry="2" />
+<text  x="376.08" y="735.5" ></text>
+</g>
+<g >
+<title>MainThread`_call_with_frames_removed (1 samples, 0.85%)</title><rect x="201.6" y="917" width="10.1" height="15.0" fill="rgb(217,211,28)" rx="2" ry="2" />
+<text  x="204.62" y="927.5" ></text>
+</g>
+<g >
+<title>MainThread`_get_spec (1 samples, 0.85%)</title><rect x="1149.7" y="1349" width="10.0" height="15.0" fill="rgb(247,227,49)" rx="2" ry="2" />
+<text  x="1152.66" y="1359.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_and_load (4 samples, 3.42%)</title><rect x="937.9" y="485" width="40.3" height="15.0" fill="rgb(213,105,25)" rx="2" ry="2" />
+<text  x="940.86" y="495.5" >Mai..</text>
+</g>
+<g >
+<title>MainThread`_find_and_load (4 samples, 3.42%)</title><rect x="363.0" y="837" width="40.3" height="15.0" fill="rgb(254,132,22)" rx="2" ry="2" />
+<text  x="365.99" y="847.5" >Mai..</text>
+</g>
+<g >
+<title>MainThread`_find_and_load (2 samples, 1.71%)</title><rect x="110.9" y="1109" width="20.1" height="15.0" fill="rgb(216,87,25)" rx="2" ry="2" />
+<text  x="113.85" y="1119.5" ></text>
+</g>
+<g >
+<title>MainThread`exec_module (14 samples, 11.97%)</title><rect x="262.1" y="981" width="141.2" height="15.0" fill="rgb(231,156,14)" rx="2" ry="2" />
+<text  x="265.14" y="991.5" >MainThread`exec_m..</text>
+</g>
+<g >
+<title>MainThread`get_data (1 samples, 0.85%)</title><rect x="1089.1" y="1109" width="10.1" height="15.0" fill="rgb(225,160,44)" rx="2" ry="2" />
+<text  x="1092.15" y="1119.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_and_load_unlocked (1 samples, 0.85%)</title><rect x="201.6" y="885" width="10.1" height="15.0" fill="rgb(245,31,16)" rx="2" ry="2" />
+<text  x="204.62" y="895.5" ></text>
+</g>
+<g >
+<title>MainThread`get_code (3 samples, 2.56%)</title><rect x="433.6" y="1157" width="30.2" height="15.0" fill="rgb(242,148,46)" rx="2" ry="2" />
+<text  x="436.59" y="1167.5" >Ma..</text>
+</g>
+<g >
+<title>MainThread`_find_and_load_unlocked (19 samples, 16.24%)</title><rect x="242.0" y="1109" width="191.6" height="15.0" fill="rgb(217,122,38)" rx="2" ry="2" />
+<text  x="244.97" y="1119.5" >MainThread`_find_and_load..</text>
+</g>
+<g >
+<title>MainThread`_path_is_mode_type (1 samples, 0.85%)</title><rect x="40.3" y="1061" width="10.0" height="15.0" fill="rgb(246,170,14)" rx="2" ry="2" />
+<text  x="43.26" y="1071.5" ></text>
+</g>
+<g >
+<title>MainThread`_load_unlocked (3 samples, 2.56%)</title><rect x="110.9" y="1205" width="30.2" height="15.0" fill="rgb(209,226,0)" rx="2" ry="2" />
+<text  x="113.85" y="1215.5" >Ma..</text>
+</g>
+<g >
+<title>MainThread`_find_and_load_unlocked (1 samples, 0.85%)</title><rect x="201.6" y="693" width="10.1" height="15.0" fill="rgb(240,174,51)" rx="2" ry="2" />
+<text  x="204.62" y="703.5" ></text>
+</g>
+<g >
+<title>MainThread`_path_stat (1 samples, 0.85%)</title><rect x="423.5" y="837" width="10.1" height="15.0" fill="rgb(220,85,50)" rx="2" ry="2" />
+<text  x="426.50" y="847.5" ></text>
+</g>
+<g >
+<title>MainThread`_path_stat (1 samples, 0.85%)</title><rect x="1079.1" y="773" width="10.0" height="15.0" fill="rgb(228,48,46)" rx="2" ry="2" />
+<text  x="1082.06" y="783.5" ></text>
+</g>
+<g >
+<title>MainThread`_get_spec (1 samples, 0.85%)</title><rect x="373.1" y="581" width="10.1" height="15.0" fill="rgb(236,104,43)" rx="2" ry="2" />
+<text  x="376.08" y="591.5" ></text>
+</g>
+<g >
+<title>MainThread`_path_is_mode_type (2 samples, 1.71%)</title><rect x="978.2" y="709" width="20.2" height="15.0" fill="rgb(247,13,52)" rx="2" ry="2" />
+<text  x="981.21" y="719.5" ></text>
+</g>
+<g >
+<title>MainThread`_path_stat (1 samples, 0.85%)</title><rect x="857.2" y="1093" width="10.1" height="15.0" fill="rgb(240,182,11)" rx="2" ry="2" />
+<text  x="860.18" y="1103.5" ></text>
+</g>
+<g >
+<title>MainThread`_get_spec (2 samples, 1.71%)</title><rect x="282.3" y="261" width="20.2" height="15.0" fill="rgb(252,101,42)" rx="2" ry="2" />
+<text  x="285.31" y="271.5" ></text>
+</g>
+<g >
+<title>MainThread`_call_with_frames_removed (1 samples, 0.85%)</title><rect x="1159.7" y="1253" width="10.1" height="15.0" fill="rgb(222,80,13)" rx="2" ry="2" />
+<text  x="1162.74" y="1263.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_and_load (9 samples, 7.69%)</title><rect x="887.4" y="805" width="90.8" height="15.0" fill="rgb(253,203,3)" rx="2" ry="2" />
+<text  x="890.44" y="815.5" >MainThread..</text>
+</g>
+<g >
+<title>MainThread`_stringify_path (2 samples, 1.71%)</title><rect x="1149.7" y="1461" width="20.1" height="15.0" fill="rgb(205,2,27)" rx="2" ry="2" />
+<text  x="1152.66" y="1471.5" ></text>
+</g>
+<g >
+<title>MainThread`&lt;module&gt; (1 samples, 0.85%)</title><rect x="312.6" y="309" width="10.0" height="15.0" fill="rgb(241,43,24)" rx="2" ry="2" />
+<text  x="315.56" y="319.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_and_load (4 samples, 3.42%)</title><rect x="998.4" y="725" width="40.3" height="15.0" fill="rgb(225,113,1)" rx="2" ry="2" />
+<text  x="1001.38" y="735.5" >Mai..</text>
+</g>
+<g >
+<title>MainThread`_find_and_load (1 samples, 0.85%)</title><rect x="342.8" y="245" width="10.1" height="15.0" fill="rgb(220,198,17)" rx="2" ry="2" />
+<text  x="345.82" y="255.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_and_load_unlocked (110 samples, 94.02%)</title><rect x="10.0" y="1397" width="1109.4" height="15.0" fill="rgb(253,177,54)" rx="2" ry="2" />
+<text  x="13.00" y="1407.5" >MainThread`_find_and_load_unlocked</text>
+</g>
+<g >
+<title>MainThread`get_code (1 samples, 0.85%)</title><rect x="1109.3" y="1349" width="10.1" height="15.0" fill="rgb(239,215,39)" rx="2" ry="2" />
+<text  x="1112.32" y="1359.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_and_load_unlocked (3 samples, 2.56%)</title><rect x="110.9" y="1221" width="30.2" height="15.0" fill="rgb(254,222,35)" rx="2" ry="2" />
+<text  x="113.85" y="1231.5" >Ma..</text>
+</g>
+<g >
+<title>MainThread`exec_module (2 samples, 1.71%)</title><rect x="373.1" y="693" width="20.1" height="15.0" fill="rgb(205,72,30)" rx="2" ry="2" />
+<text  x="376.08" y="703.5" ></text>
+</g>
+<g >
+<title>MainThread`&lt;module&gt; (1 samples, 0.85%)</title><rect x="1159.7" y="1237" width="10.1" height="15.0" fill="rgb(252,54,23)" rx="2" ry="2" />
+<text  x="1162.74" y="1247.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_spec (2 samples, 1.71%)</title><rect x="1119.4" y="1253" width="20.2" height="15.0" fill="rgb(245,89,40)" rx="2" ry="2" />
+<text  x="1122.40" y="1263.5" ></text>
+</g>
+<g >
+<title>MainThread`_handle_fromlist (1 samples, 0.85%)</title><rect x="917.7" y="517" width="10.1" height="15.0" fill="rgb(216,62,43)" rx="2" ry="2" />
+<text  x="920.69" y="527.5" ></text>
+</g>
+<g >
+<title>MainThread`_load_unlocked (2 samples, 1.71%)</title><rect x="1119.4" y="1349" width="20.2" height="15.0" fill="rgb(232,161,51)" rx="2" ry="2" />
+<text  x="1122.40" y="1359.5" ></text>
+</g>
+<g >
+<title>MainThread`exec_module (1 samples, 0.85%)</title><rect x="1028.6" y="549" width="10.1" height="15.0" fill="rgb(209,85,5)" rx="2" ry="2" />
+<text  x="1031.63" y="559.5" ></text>
+</g>
+<g >
+<title>MainThread`create_module (1 samples, 0.85%)</title><rect x="786.6" y="1125" width="10.1" height="15.0" fill="rgb(213,213,54)" rx="2" ry="2" />
+<text  x="789.58" y="1135.5" ></text>
+</g>
+<g >
+<title>MainThread`_call_with_frames_removed (2 samples, 1.71%)</title><rect x="332.7" y="501" width="20.2" height="15.0" fill="rgb(240,227,19)" rx="2" ry="2" />
+<text  x="335.74" y="511.5" ></text>
+</g>
+<g >
+<title>MainThread`_path_stat (1 samples, 0.85%)</title><rect x="312.6" y="197" width="10.0" height="15.0" fill="rgb(253,121,40)" rx="2" ry="2" />
+<text  x="315.56" y="207.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_and_load_unlocked (24 samples, 20.51%)</title><rect x="857.2" y="1173" width="242.0" height="15.0" fill="rgb(213,51,22)" rx="2" ry="2" />
+<text  x="860.18" y="1183.5" >MainThread`_find_and_load_unlocked</text>
+</g>
+<g >
+<title>MainThread`_find_and_load_unlocked (1 samples, 0.85%)</title><rect x="161.3" y="693" width="10.1" height="15.0" fill="rgb(218,78,34)" rx="2" ry="2" />
+<text  x="164.28" y="703.5" ></text>
+</g>
+<g >
+<title>MainThread`_get_spec (2 samples, 1.71%)</title><rect x="20.1" y="1205" width="20.2" height="15.0" fill="rgb(209,209,4)" rx="2" ry="2" />
+<text  x="23.09" y="1215.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_and_load (1 samples, 0.85%)</title><rect x="201.6" y="1045" width="10.1" height="15.0" fill="rgb(245,157,51)" rx="2" ry="2" />
+<text  x="204.62" y="1055.5" ></text>
+</g>
+<g >
+<title>MainThread`exec_module (1 samples, 0.85%)</title><rect x="90.7" y="805" width="10.1" height="15.0" fill="rgb(253,62,19)" rx="2" ry="2" />
+<text  x="93.68" y="815.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_and_load_unlocked (1 samples, 0.85%)</title><rect x="776.5" y="981" width="10.1" height="15.0" fill="rgb(254,180,18)" rx="2" ry="2" />
+<text  x="779.50" y="991.5" ></text>
+</g>
+<g >
+<title>MainThread`exec_module (1 samples, 0.85%)</title><rect x="312.6" y="341" width="10.0" height="15.0" fill="rgb(224,158,47)" rx="2" ry="2" />
+<text  x="315.56" y="351.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_and_load_unlocked (9 samples, 7.69%)</title><rect x="887.4" y="837" width="90.8" height="15.0" fill="rgb(245,3,1)" rx="2" ry="2" />
+<text  x="890.44" y="847.5" >MainThread..</text>
+</g>
+<g >
+<title>MainThread`_call_with_frames_removed (14 samples, 11.97%)</title><rect x="262.1" y="965" width="141.2" height="15.0" fill="rgb(233,49,27)" rx="2" ry="2" />
+<text  x="265.14" y="975.5" >MainThread`_call_..</text>
+</g>
+<g >
+<title>MainThread`&lt;module&gt; (16 samples, 13.68%)</title><rect x="887.4" y="869" width="161.4" height="15.0" fill="rgb(214,12,29)" rx="2" ry="2" />
+<text  x="890.44" y="879.5" >MainThread`&lt;module&gt;</text>
+</g>
+<g >
+<title>MainThread`find_spec (1 samples, 0.85%)</title><rect x="352.9" y="885" width="10.1" height="15.0" fill="rgb(254,128,20)" rx="2" ry="2" />
+<text  x="355.91" y="895.5" ></text>
+</g>
+<g >
+<title>MainThread`_path_importer_cache (1 samples, 0.85%)</title><rect x="1028.6" y="325" width="10.1" height="15.0" fill="rgb(238,76,39)" rx="2" ry="2" />
+<text  x="1031.63" y="335.5" ></text>
+</g>
+<g >
+<title>MainThread`_call_with_frames_removed (8 samples, 6.84%)</title><rect x="272.2" y="725" width="80.7" height="15.0" fill="rgb(218,96,50)" rx="2" ry="2" />
+<text  x="275.22" y="735.5" >MainThrea..</text>
+</g>
+<g >
+<title>MainThread`_find_and_load_unlocked (2 samples, 1.71%)</title><rect x="110.9" y="1093" width="20.1" height="15.0" fill="rgb(230,185,43)" rx="2" ry="2" />
+<text  x="113.85" y="1103.5" ></text>
+</g>
+<g >
+<title>MainThread`_handle_fromlist (3 samples, 2.56%)</title><rect x="110.9" y="1269" width="30.2" height="15.0" fill="rgb(243,54,39)" rx="2" ry="2" />
+<text  x="113.85" y="1279.5" >Ma..</text>
+</g>
+<g >
+<title>MainThread`&lt;module&gt; (1 samples, 0.85%)</title><rect x="120.9" y="933" width="10.1" height="15.0" fill="rgb(247,163,38)" rx="2" ry="2" />
+<text  x="123.94" y="943.5" ></text>
+</g>
+<g >
+<title>MainThread`_path_isfile (1 samples, 0.85%)</title><rect x="867.3" y="997" width="10.1" height="15.0" fill="rgb(233,213,12)" rx="2" ry="2" />
+<text  x="870.26" y="1007.5" ></text>
+</g>
+<g >
+<title>MainThread`find_spec (1 samples, 0.85%)</title><rect x="403.3" y="773" width="10.1" height="15.0" fill="rgb(235,70,25)" rx="2" ry="2" />
+<text  x="406.33" y="783.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_and_load (68 samples, 58.12%)</title><rect x="161.3" y="1317" width="685.8" height="15.0" fill="rgb(218,131,39)" rx="2" ry="2" />
+<text  x="164.28" y="1327.5" >MainThread`_find_and_load</text>
+</g>
+<g >
+<title>MainThread`_load_unlocked (6 samples, 5.13%)</title><rect x="161.3" y="1141" width="60.5" height="15.0" fill="rgb(241,165,25)" rx="2" ry="2" />
+<text  x="164.28" y="1151.5" >MainTh..</text>
+</g>
+<g >
+<title>MainThread`_find_and_load (16 samples, 13.68%)</title><rect x="242.0" y="1029" width="161.3" height="15.0" fill="rgb(229,67,46)" rx="2" ry="2" />
+<text  x="244.97" y="1039.5" >MainThread`_find_and..</text>
+</g>
+<g >
+<title>MainThread`_find_and_load_unlocked (4 samples, 3.42%)</title><rect x="937.9" y="373" width="40.3" height="15.0" fill="rgb(235,216,47)" rx="2" ry="2" />
+<text  x="940.86" y="383.5" >Mai..</text>
+</g>
+<g >
+<title>MainThread`_find_spec (1 samples, 0.85%)</title><rect x="80.6" y="757" width="10.1" height="15.0" fill="rgb(225,98,20)" rx="2" ry="2" />
+<text  x="83.60" y="767.5" ></text>
+</g>
+<g >
+<title>MainThread`_call_with_frames_removed (1 samples, 0.85%)</title><rect x="423.5" y="1045" width="10.1" height="15.0" fill="rgb(209,158,26)" rx="2" ry="2" />
+<text  x="426.50" y="1055.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_and_load (9 samples, 7.69%)</title><rect x="887.4" y="853" width="90.8" height="15.0" fill="rgb(243,225,1)" rx="2" ry="2" />
+<text  x="890.44" y="863.5" >MainThread..</text>
+</g>
+<g >
+<title>MainThread`_call_with_frames_removed (8 samples, 6.84%)</title><rect x="272.2" y="677" width="80.7" height="15.0" fill="rgb(239,213,4)" rx="2" ry="2" />
+<text  x="275.22" y="687.5" >MainThrea..</text>
+</g>
+<g >
+<title>MainThread`isdir (1 samples, 0.85%)</title><rect x="322.6" y="309" width="10.1" height="15.0" fill="rgb(239,43,23)" rx="2" ry="2" />
+<text  x="325.65" y="319.5" ></text>
+</g>
+<g >
+<title>MainThread`_handle_fromlist (1 samples, 0.85%)</title><rect x="776.5" y="1029" width="10.1" height="15.0" fill="rgb(239,15,54)" rx="2" ry="2" />
+<text  x="779.50" y="1039.5" ></text>
+</g>
+<g >
+<title>MainThread`_call_with_frames_removed (4 samples, 3.42%)</title><rect x="363.0" y="869" width="40.3" height="15.0" fill="rgb(206,152,4)" rx="2" ry="2" />
+<text  x="365.99" y="879.5" >Mai..</text>
+</g>
+<g >
+<title>MainThread`get_code (1 samples, 0.85%)</title><rect x="342.8" y="181" width="10.1" height="15.0" fill="rgb(207,102,27)" rx="2" ry="2" />
+<text  x="345.82" y="191.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_and_load_unlocked (4 samples, 3.42%)</title><rect x="937.9" y="469" width="40.3" height="15.0" fill="rgb(252,139,23)" rx="2" ry="2" />
+<text  x="940.86" y="479.5" >Mai..</text>
+</g>
+<g >
+<title>MainThread`module_from_spec (1 samples, 0.85%)</title><rect x="1038.7" y="773" width="10.1" height="15.0" fill="rgb(253,19,12)" rx="2" ry="2" />
+<text  x="1041.72" y="783.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_and_load (2 samples, 1.71%)</title><rect x="1119.4" y="1381" width="20.2" height="15.0" fill="rgb(214,20,36)" rx="2" ry="2" />
+<text  x="1122.40" y="1391.5" ></text>
+</g>
+<g >
+<title>MainThread`construct_from_string (1 samples, 0.85%)</title><rect x="161.3" y="821" width="10.1" height="15.0" fill="rgb(220,183,18)" rx="2" ry="2" />
+<text  x="164.28" y="831.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_and_load (3 samples, 2.56%)</title><rect x="282.3" y="325" width="30.3" height="15.0" fill="rgb(219,10,52)" rx="2" ry="2" />
+<text  x="285.31" y="335.5" >Ma..</text>
+</g>
+<g >
+<title>MainThread`_find_spec (1 samples, 0.85%)</title><rect x="403.3" y="821" width="10.1" height="15.0" fill="rgb(230,99,47)" rx="2" ry="2" />
+<text  x="406.33" y="831.5" ></text>
+</g>
+<g >
+<title>MainThread`get_data (1 samples, 0.85%)</title><rect x="413.4" y="1045" width="10.1" height="15.0" fill="rgb(226,191,50)" rx="2" ry="2" />
+<text  x="416.42" y="1055.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_and_load (7 samples, 5.98%)</title><rect x="978.2" y="821" width="70.6" height="15.0" fill="rgb(232,90,22)" rx="2" ry="2" />
+<text  x="981.21" y="831.5" >MainThr..</text>
+</g>
+<g >
+<title>MainThread`get_data (1 samples, 0.85%)</title><rect x="968.1" y="213" width="10.1" height="15.0" fill="rgb(225,99,52)" rx="2" ry="2" />
+<text  x="971.12" y="223.5" ></text>
+</g>
+<g >
+<title>MainThread`find_spec (1 samples, 0.85%)</title><rect x="80.6" y="741" width="10.1" height="15.0" fill="rgb(254,116,23)" rx="2" ry="2" />
+<text  x="83.60" y="751.5" ></text>
+</g>
+<g >
+<title>MainThread`find_spec (1 samples, 0.85%)</title><rect x="90.7" y="645" width="10.1" height="15.0" fill="rgb(218,204,1)" rx="2" ry="2" />
+<text  x="93.68" y="655.5" ></text>
+</g>
+<g >
+<title>MainThread`_path_isfile (1 samples, 0.85%)</title><rect x="1099.2" y="1061" width="10.1" height="15.0" fill="rgb(220,186,1)" rx="2" ry="2" />
+<text  x="1102.23" y="1071.5" ></text>
+</g>
+<g >
+<title>MainThread`_call_with_frames_removed (1 samples, 0.85%)</title><rect x="403.3" y="917" width="10.1" height="15.0" fill="rgb(217,12,18)" rx="2" ry="2" />
+<text  x="406.33" y="927.5" ></text>
+</g>
+<g >
+<title>MainThread`_trim_arity (1 samples, 0.85%)</title><rect x="302.5" y="101" width="10.1" height="15.0" fill="rgb(251,216,43)" rx="2" ry="2" />
+<text  x="305.48" y="111.5" ></text>
+</g>
+<g >
+<title>MainThread`_load_unlocked (1 samples, 0.85%)</title><rect x="342.8" y="309" width="10.1" height="15.0" fill="rgb(212,22,7)" rx="2" ry="2" />
+<text  x="345.82" y="319.5" ></text>
+</g>
+<g >
+<title>MainThread`find_spec (1 samples, 0.85%)</title><rect x="998.4" y="677" width="10.1" height="15.0" fill="rgb(249,125,37)" rx="2" ry="2" />
+<text  x="1001.38" y="687.5" ></text>
+</g>
+<g >
+<title>MainThread`_path_stat (1 samples, 0.85%)</title><rect x="262.1" y="757" width="10.1" height="15.0" fill="rgb(208,145,39)" rx="2" ry="2" />
+<text  x="265.14" y="767.5" ></text>
+</g>
+<g >
+<title>MainThread`_call_with_frames_removed (8 samples, 6.84%)</title><rect x="897.5" y="741" width="80.7" height="15.0" fill="rgb(249,131,27)" rx="2" ry="2" />
+<text  x="900.52" y="751.5" >MainThrea..</text>
+</g>
+<g >
+<title>MainThread`&lt;module&gt; (8 samples, 6.84%)</title><rect x="272.2" y="709" width="80.7" height="15.0" fill="rgb(225,214,33)" rx="2" ry="2" />
+<text  x="275.22" y="719.5" >MainThrea..</text>
+</g>
+<g >
+<title>MainThread`_find_spec (2 samples, 1.71%)</title><rect x="897.5" y="485" width="20.2" height="15.0" fill="rgb(233,117,9)" rx="2" ry="2" />
+<text  x="900.52" y="495.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_and_load_unlocked (1 samples, 0.85%)</title><rect x="302.5" y="213" width="10.1" height="15.0" fill="rgb(225,223,24)" rx="2" ry="2" />
+<text  x="305.48" y="223.5" ></text>
+</g>
+<g >
+<title>MainThread`_get_spec (1 samples, 0.85%)</title><rect x="352.9" y="869" width="10.1" height="15.0" fill="rgb(237,220,52)" rx="2" ry="2" />
+<text  x="355.91" y="879.5" ></text>
+</g>
+<g >
+<title>MainThread`_load_unlocked (1 samples, 0.85%)</title><rect x="1159.7" y="1381" width="10.1" height="15.0" fill="rgb(242,143,33)" rx="2" ry="2" />
+<text  x="1162.74" y="1391.5" ></text>
+</g>
+<g >
+<title>MainThread`&lt;module&gt; (3 samples, 2.56%)</title><rect x="1008.5" y="645" width="30.2" height="15.0" fill="rgb(239,161,7)" rx="2" ry="2" />
+<text  x="1011.46" y="655.5" >Ma..</text>
+</g>
+<g >
+<title>MainThread`_find_and_load (1 samples, 0.85%)</title><rect x="1079.1" y="901" width="10.0" height="15.0" fill="rgb(241,223,30)" rx="2" ry="2" />
+<text  x="1082.06" y="911.5" ></text>
+</g>
+<g >
+<title>MainThread`_get_spec (1 samples, 0.85%)</title><rect x="120.9" y="853" width="10.1" height="15.0" fill="rgb(238,12,48)" rx="2" ry="2" />
+<text  x="123.94" y="863.5" ></text>
+</g>
+<g >
+<title>MainThread`_path_stat (1 samples, 0.85%)</title><rect x="151.2" y="1317" width="10.1" height="15.0" fill="rgb(229,183,1)" rx="2" ry="2" />
+<text  x="154.20" y="1327.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_and_load (1 samples, 0.85%)</title><rect x="312.6" y="389" width="10.0" height="15.0" fill="rgb(252,113,42)" rx="2" ry="2" />
+<text  x="315.56" y="399.5" ></text>
+</g>
+<g >
+<title>MainThread`_get_spec (1 samples, 0.85%)</title><rect x="110.9" y="1045" width="10.0" height="15.0" fill="rgb(209,197,31)" rx="2" ry="2" />
+<text  x="113.85" y="1055.5" ></text>
+</g>
+<g >
+<title>MainThread`_path_is_mode_type (1 samples, 0.85%)</title><rect x="463.8" y="1013" width="10.1" height="15.0" fill="rgb(245,174,44)" rx="2" ry="2" />
+<text  x="466.85" y="1023.5" ></text>
+</g>
+<g >
+<title>MainThread`_path_stat (1 samples, 0.85%)</title><rect x="171.4" y="789" width="10.1" height="15.0" fill="rgb(210,206,53)" rx="2" ry="2" />
+<text  x="174.37" y="799.5" ></text>
+</g>
+<g >
+<title>MainThread`find_spec (2 samples, 1.71%)</title><rect x="867.3" y="1045" width="20.1" height="15.0" fill="rgb(212,25,40)" rx="2" ry="2" />
+<text  x="870.26" y="1055.5" ></text>
+</g>
+<g >
+<title>MainThread`path_hook_for_FileFinder (1 samples, 0.85%)</title><rect x="30.2" y="1157" width="10.1" height="15.0" fill="rgb(223,167,6)" rx="2" ry="2" />
+<text  x="33.17" y="1167.5" ></text>
+</g>
+<g >
+<title>MainThread`module_from_spec (1 samples, 0.85%)</title><rect x="403.3" y="949" width="10.1" height="15.0" fill="rgb(231,181,11)" rx="2" ry="2" />
+<text  x="406.33" y="959.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_and_load (4 samples, 3.42%)</title><rect x="60.4" y="1077" width="40.4" height="15.0" fill="rgb(214,19,11)" rx="2" ry="2" />
+<text  x="63.43" y="1087.5" >Mai..</text>
+</g>
+<g >
+<title>MainThread`&lt;module&gt; (1 samples, 0.85%)</title><rect x="80.6" y="805" width="10.1" height="15.0" fill="rgb(206,226,20)" rx="2" ry="2" />
+<text  x="83.60" y="815.5" ></text>
+</g>
+<g >
+<title>MainThread`_path_isfile (1 samples, 0.85%)</title><rect x="1079.1" y="805" width="10.0" height="15.0" fill="rgb(212,12,51)" rx="2" ry="2" />
+<text  x="1082.06" y="815.5" ></text>
+</g>
+<g >
+<title>MainThread`_load_unlocked (3 samples, 2.56%)</title><rect x="1008.5" y="693" width="30.2" height="15.0" fill="rgb(215,151,23)" rx="2" ry="2" />
+<text  x="1011.46" y="703.5" >Ma..</text>
+</g>
+<g >
+<title>MainThread`exec_module (4 samples, 3.42%)</title><rect x="937.9" y="533" width="40.3" height="15.0" fill="rgb(217,101,32)" rx="2" ry="2" />
+<text  x="940.86" y="543.5" >Mai..</text>
+</g>
+<g >
+<title>MainThread`_find_and_load (1 samples, 0.85%)</title><rect x="1038.7" y="725" width="10.1" height="15.0" fill="rgb(234,227,27)" rx="2" ry="2" />
+<text  x="1041.72" y="735.5" ></text>
+</g>
+<g >
+<title>MainThread`_call_with_frames_removed (1 samples, 0.85%)</title><rect x="201.6" y="981" width="10.1" height="15.0" fill="rgb(239,226,42)" rx="2" ry="2" />
+<text  x="204.62" y="991.5" ></text>
+</g>
+<g >
+<title>MainThread`exists (6 samples, 5.13%)</title><rect x="716.0" y="677" width="60.5" height="15.0" fill="rgb(211,219,21)" rx="2" ry="2" />
+<text  x="718.98" y="687.5" >MainTh..</text>
+</g>
+<g >
+<title>MainThread`_find_and_load_unlocked (1 samples, 0.85%)</title><rect x="403.3" y="837" width="10.1" height="15.0" fill="rgb(233,156,34)" rx="2" ry="2" />
+<text  x="406.33" y="847.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_and_load (7 samples, 5.98%)</title><rect x="40.3" y="1173" width="70.6" height="15.0" fill="rgb(213,110,43)" rx="2" ry="2" />
+<text  x="43.26" y="1183.5" >MainThr..</text>
+</g>
+<g >
+<title>MainThread`_find_and_load (1 samples, 0.85%)</title><rect x="423.5" y="1029" width="10.1" height="15.0" fill="rgb(219,218,19)" rx="2" ry="2" />
+<text  x="426.50" y="1039.5" ></text>
+</g>
+<g >
+<title>MainThread`_call_with_frames_removed (1 samples, 0.85%)</title><rect x="1079.1" y="933" width="10.0" height="15.0" fill="rgb(242,47,18)" rx="2" ry="2" />
+<text  x="1082.06" y="943.5" ></text>
+</g>
+<g >
+<title>MainThread`_load_unlocked (95 samples, 81.20%)</title><rect x="161.3" y="1381" width="958.1" height="15.0" fill="rgb(222,187,3)" rx="2" ry="2" />
+<text  x="164.28" y="1391.5" >MainThread`_load_unlocked</text>
+</g>
+<g >
+<title>MainThread`_call_with_frames_removed (1 samples, 0.85%)</title><rect x="917.7" y="501" width="10.1" height="15.0" fill="rgb(211,167,9)" rx="2" ry="2" />
+<text  x="920.69" y="511.5" ></text>
+</g>
+<g >
+<title>MainThread`_load_unlocked (1 samples, 0.85%)</title><rect x="242.0" y="949" width="10.1" height="15.0" fill="rgb(219,129,4)" rx="2" ry="2" />
+<text  x="244.97" y="959.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_spec (1 samples, 0.85%)</title><rect x="171.4" y="853" width="10.1" height="15.0" fill="rgb(220,74,6)" rx="2" ry="2" />
+<text  x="174.37" y="863.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_and_load_unlocked (28 samples, 23.93%)</title><rect x="494.1" y="1013" width="282.4" height="15.0" fill="rgb(226,148,26)" rx="2" ry="2" />
+<text  x="497.10" y="1023.5" >MainThread`_find_and_load_unlocked</text>
+</g>
+<g >
+<title>MainThread`_find_spec (1 samples, 0.85%)</title><rect x="998.4" y="693" width="10.1" height="15.0" fill="rgb(219,108,17)" rx="2" ry="2" />
+<text  x="1001.38" y="703.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_spec (1 samples, 0.85%)</title><rect x="110.9" y="1077" width="10.0" height="15.0" fill="rgb(214,197,18)" rx="2" ry="2" />
+<text  x="113.85" y="1087.5" ></text>
+</g>
+<g >
+<title>MainThread`importobj (2 samples, 1.71%)</title><rect x="1149.7" y="1429" width="20.1" height="15.0" fill="rgb(247,182,12)" rx="2" ry="2" />
+<text  x="1152.66" y="1439.5" ></text>
+</g>
+<g >
+<title>MainThread`_path_stat (1 samples, 0.85%)</title><rect x="90.7" y="597" width="10.1" height="15.0" fill="rgb(225,122,26)" rx="2" ry="2" />
+<text  x="93.68" y="607.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_spec (1 samples, 0.85%)</title><rect x="161.3" y="677" width="10.1" height="15.0" fill="rgb(232,146,33)" rx="2" ry="2" />
+<text  x="164.28" y="687.5" ></text>
+</g>
+<g >
+<title>MainThread`&lt;genexpr&gt; (1 samples, 0.85%)</title><rect x="161.3" y="869" width="10.1" height="15.0" fill="rgb(211,57,53)" rx="2" ry="2" />
+<text  x="164.28" y="879.5" ></text>
+</g>
+<g >
+<title>MainThread`find_spec (1 samples, 0.85%)</title><rect x="1018.5" y="581" width="10.1" height="15.0" fill="rgb(225,1,3)" rx="2" ry="2" />
+<text  x="1021.55" y="591.5" ></text>
+</g>
+<g >
+<title>MainThread`_load_unlocked (60 samples, 51.28%)</title><rect x="242.0" y="1285" width="605.1" height="15.0" fill="rgb(226,218,38)" rx="2" ry="2" />
+<text  x="244.97" y="1295.5" >MainThread`_load_unlocked</text>
+</g>
+<g >
+<title>MainThread`get_code (1 samples, 0.85%)</title><rect x="968.1" y="229" width="10.1" height="15.0" fill="rgb(244,166,39)" rx="2" ry="2" />
+<text  x="971.12" y="239.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_and_load_unlocked (1 samples, 0.85%)</title><rect x="201.6" y="1029" width="10.1" height="15.0" fill="rgb(227,168,6)" rx="2" ry="2" />
+<text  x="204.62" y="1039.5" ></text>
+</g>
+<g >
+<title>MainThread`_call_with_frames_removed (1 samples, 0.85%)</title><rect x="342.8" y="277" width="10.1" height="15.0" fill="rgb(240,42,6)" rx="2" ry="2" />
+<text  x="345.82" y="287.5" ></text>
+</g>
+<g >
+<title>MainThread`find_spec (1 samples, 0.85%)</title><rect x="252.1" y="981" width="10.0" height="15.0" fill="rgb(222,223,25)" rx="2" ry="2" />
+<text  x="255.05" y="991.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_and_load_unlocked (1 samples, 0.85%)</title><rect x="1028.6" y="485" width="10.1" height="15.0" fill="rgb(217,153,54)" rx="2" ry="2" />
+<text  x="1031.63" y="495.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_and_load_unlocked (3 samples, 2.56%)</title><rect x="282.3" y="309" width="30.3" height="15.0" fill="rgb(210,29,15)" rx="2" ry="2" />
+<text  x="285.31" y="319.5" >Ma..</text>
+</g>
+<g >
+<title>MainThread`wait (1 samples, 0.85%)</title><rect x="1179.9" y="1493" width="10.1" height="15.0" fill="rgb(210,147,6)" rx="2" ry="2" />
+<text  x="1182.91" y="1503.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_and_load_unlocked (16 samples, 13.68%)</title><rect x="887.4" y="933" width="161.4" height="15.0" fill="rgb(215,72,10)" rx="2" ry="2" />
+<text  x="890.44" y="943.5" >MainThread`_find_and..</text>
+</g>
+<g >
+<title>MainThread`_call_with_frames_removed (27 samples, 23.08%)</title><rect x="504.2" y="949" width="272.3" height="15.0" fill="rgb(238,149,36)" rx="2" ry="2" />
+<text  x="507.19" y="959.5" >MainThread`_call_with_frames_removed</text>
+</g>
+<g >
+<title>MainThread`&lt;module&gt; (22 samples, 18.80%)</title><rect x="867.3" y="1109" width="221.8" height="15.0" fill="rgb(209,14,30)" rx="2" ry="2" />
+<text  x="870.26" y="1119.5" >MainThread`&lt;module&gt;</text>
+</g>
+<g >
+<title>MainThread`_call_with_frames_removed (9 samples, 7.69%)</title><rect x="262.1" y="901" width="90.8" height="15.0" fill="rgb(227,172,31)" rx="2" ry="2" />
+<text  x="265.14" y="911.5" >MainThread..</text>
+</g>
+<g >
+<title>MainThread`&lt;module&gt; (2 samples, 1.71%)</title><rect x="958.0" y="309" width="20.2" height="15.0" fill="rgb(236,80,46)" rx="2" ry="2" />
+<text  x="961.03" y="319.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_and_load_unlocked (1 samples, 0.85%)</title><rect x="80.6" y="869" width="10.1" height="15.0" fill="rgb(233,156,18)" rx="2" ry="2" />
+<text  x="83.60" y="879.5" ></text>
+</g>
+<g >
+<title>MainThread`_call_with_frames_removed (1 samples, 0.85%)</title><rect x="786.6" y="1205" width="10.1" height="15.0" fill="rgb(249,90,42)" rx="2" ry="2" />
+<text  x="789.58" y="1215.5" ></text>
+</g>
+<g >
+<title>MainThread`find_spec (1 samples, 0.85%)</title><rect x="352.9" y="853" width="10.1" height="15.0" fill="rgb(237,78,14)" rx="2" ry="2" />
+<text  x="355.91" y="863.5" ></text>
+</g>
+<g >
+<title>MainThread`_load_unlocked (29 samples, 24.79%)</title><rect x="494.1" y="1093" width="292.5" height="15.0" fill="rgb(238,157,46)" rx="2" ry="2" />
+<text  x="497.10" y="1103.5" >MainThread`_load_unlocked</text>
+</g>
+<g >
+<title>MainThread`exec_module (1 samples, 0.85%)</title><rect x="201.6" y="853" width="10.1" height="15.0" fill="rgb(231,171,24)" rx="2" ry="2" />
+<text  x="204.62" y="863.5" ></text>
+</g>
+<g >
+<title>MainThread`_path_stat (1 samples, 0.85%)</title><rect x="80.6" y="661" width="10.1" height="15.0" fill="rgb(222,121,32)" rx="2" ry="2" />
+<text  x="83.60" y="671.5" ></text>
+</g>
+<g >
+<title>MainThread`_call_with_frames_removed (1 samples, 0.85%)</title><rect x="312.6" y="405" width="10.0" height="15.0" fill="rgb(233,105,11)" rx="2" ry="2" />
+<text  x="315.56" y="415.5" ></text>
+</g>
+<g >
+<title>MainThread`&lt;module&gt; (7 samples, 5.98%)</title><rect x="40.3" y="1189" width="70.6" height="15.0" fill="rgb(228,71,41)" rx="2" ry="2" />
+<text  x="43.26" y="1199.5" >MainThr..</text>
+</g>
+<g >
+<title>MainThread`_load_unlocked (27 samples, 23.08%)</title><rect x="504.2" y="997" width="272.3" height="15.0" fill="rgb(254,96,7)" rx="2" ry="2" />
+<text  x="507.19" y="1007.5" >MainThread`_load_unlocked</text>
+</g>
+<g >
+<title>MainThread`_path_is_mode_type (1 samples, 0.85%)</title><rect x="1099.2" y="1045" width="10.1" height="15.0" fill="rgb(218,184,33)" rx="2" ry="2" />
+<text  x="1102.23" y="1055.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_and_load_unlocked (4 samples, 3.42%)</title><rect x="161.3" y="965" width="40.3" height="15.0" fill="rgb(215,139,51)" rx="2" ry="2" />
+<text  x="164.28" y="975.5" >Mai..</text>
+</g>
+<g >
+<title>MainThread`_find_and_load_unlocked (1 samples, 0.85%)</title><rect x="312.6" y="373" width="10.0" height="15.0" fill="rgb(236,187,11)" rx="2" ry="2" />
+<text  x="315.56" y="383.5" ></text>
+</g>
+<g >
+<title>MainThread`find_spec (1 samples, 0.85%)</title><rect x="1008.5" y="453" width="10.0" height="15.0" fill="rgb(207,11,5)" rx="2" ry="2" />
+<text  x="1011.46" y="463.5" ></text>
+</g>
+<g >
+<title>MainThread`setParseAction (1 samples, 0.85%)</title><rect x="302.5" y="117" width="10.1" height="15.0" fill="rgb(236,40,32)" rx="2" ry="2" />
+<text  x="305.48" y="127.5" ></text>
+</g>
+<g >
+<title>MainThread`_load_unlocked (3 samples, 2.56%)</title><rect x="70.5" y="1045" width="30.3" height="15.0" fill="rgb(236,180,35)" rx="2" ry="2" />
+<text  x="73.51" y="1055.5" >Ma..</text>
+</g>
+<g >
+<title>MainThread`find_spec (1 samples, 0.85%)</title><rect x="887.4" y="725" width="10.1" height="15.0" fill="rgb(247,198,35)" rx="2" ry="2" />
+<text  x="890.44" y="735.5" ></text>
+</g>
+<g >
+<title>MainThread`get_data (1 samples, 0.85%)</title><rect x="383.2" y="661" width="10.0" height="15.0" fill="rgb(229,68,28)" rx="2" ry="2" />
+<text  x="386.16" y="671.5" ></text>
+</g>
+<g >
+<title>MainThread`find_spec (1 samples, 0.85%)</title><rect x="161.3" y="629" width="10.1" height="15.0" fill="rgb(209,49,17)" rx="2" ry="2" />
+<text  x="164.28" y="639.5" ></text>
+</g>
+<g >
+<title>MainThread`_path_is_mode_type (1 samples, 0.85%)</title><rect x="221.8" y="1205" width="10.1" height="15.0" fill="rgb(222,30,25)" rx="2" ry="2" />
+<text  x="224.79" y="1215.5" ></text>
+</g>
+<g >
+<title>MainThread`_load_unlocked (1 samples, 0.85%)</title><rect x="120.9" y="981" width="10.1" height="15.0" fill="rgb(244,33,21)" rx="2" ry="2" />
+<text  x="123.94" y="991.5" ></text>
+</g>
+<g >
+<title>MainThread`_handle_fromlist (5 samples, 4.27%)</title><rect x="927.8" y="709" width="50.4" height="15.0" fill="rgb(214,184,49)" rx="2" ry="2" />
+<text  x="930.78" y="719.5" >MainT..</text>
+</g>
+<g >
+<title>MainThread`_load_unlocked (19 samples, 16.24%)</title><rect x="242.0" y="1093" width="191.6" height="15.0" fill="rgb(223,209,29)" rx="2" ry="2" />
+<text  x="244.97" y="1103.5" >MainThread`_load_unlocked</text>
+</g>
+<g >
+<title>MainThread`_load_unlocked (1 samples, 0.85%)</title><rect x="403.3" y="965" width="10.1" height="15.0" fill="rgb(253,37,19)" rx="2" ry="2" />
+<text  x="406.33" y="975.5" ></text>
+</g>
+<g >
+<title>MainThread`get_code (2 samples, 1.71%)</title><rect x="181.5" y="917" width="20.1" height="15.0" fill="rgb(208,44,14)" rx="2" ry="2" />
+<text  x="184.45" y="927.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_spec (1 samples, 0.85%)</title><rect x="1008.5" y="501" width="10.0" height="15.0" fill="rgb(251,179,16)" rx="2" ry="2" />
+<text  x="1011.46" y="511.5" ></text>
+</g>
+<g >
+<title>MainThread`find_spec (2 samples, 1.71%)</title><rect x="40.3" y="1093" width="20.1" height="15.0" fill="rgb(207,30,7)" rx="2" ry="2" />
+<text  x="43.26" y="1103.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_and_load (1 samples, 0.85%)</title><rect x="171.4" y="885" width="10.1" height="15.0" fill="rgb(238,200,30)" rx="2" ry="2" />
+<text  x="174.37" y="895.5" ></text>
+</g>
+<g >
+<title>MainThread`_call_with_frames_removed (1 samples, 0.85%)</title><rect x="1008.5" y="597" width="10.0" height="15.0" fill="rgb(213,37,6)" rx="2" ry="2" />
+<text  x="1011.46" y="607.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_and_load_unlocked (1 samples, 0.85%)</title><rect x="342.8" y="325" width="10.1" height="15.0" fill="rgb(253,157,51)" rx="2" ry="2" />
+<text  x="345.82" y="335.5" ></text>
+</g>
+<g >
+<title>MainThread`&lt;module&gt; (1 samples, 0.85%)</title><rect x="302.5" y="149" width="10.1" height="15.0" fill="rgb(241,194,28)" rx="2" ry="2" />
+<text  x="305.48" y="159.5" ></text>
+</g>
+<g >
+<title>MainThread`_load_unlocked (16 samples, 13.68%)</title><rect x="887.4" y="917" width="161.4" height="15.0" fill="rgb(209,44,21)" rx="2" ry="2" />
+<text  x="890.44" y="927.5" >MainThread`_load_unl..</text>
+</g>
+<g >
+<title>MainThread`&lt;module&gt; (4 samples, 3.42%)</title><rect x="60.4" y="1093" width="40.4" height="15.0" fill="rgb(225,22,6)" rx="2" ry="2" />
+<text  x="63.43" y="1103.5" >Mai..</text>
+</g>
+<g >
+<title>MainThread`_load_unlocked (2 samples, 1.71%)</title><rect x="332.7" y="533" width="20.2" height="15.0" fill="rgb(237,221,7)" rx="2" ry="2" />
+<text  x="335.74" y="543.5" ></text>
+</g>
+<g >
+<title>MainThread`_path_stat (1 samples, 0.85%)</title><rect x="120.9" y="821" width="10.1" height="15.0" fill="rgb(209,27,39)" rx="2" ry="2" />
+<text  x="123.94" y="831.5" ></text>
+</g>
+<g >
+<title>MainThread`exec_module (22 samples, 18.80%)</title><rect x="242.0" y="1173" width="221.8" height="15.0" fill="rgb(223,179,17)" rx="2" ry="2" />
+<text  x="244.97" y="1183.5" >MainThread`exec_module</text>
+</g>
+<g >
+<title>MainThread`get_code (1 samples, 0.85%)</title><rect x="131.0" y="1173" width="10.1" height="15.0" fill="rgb(220,64,13)" rx="2" ry="2" />
+<text  x="134.03" y="1183.5" ></text>
+</g>
+<g >
+<title>MainThread`_get_spec (1 samples, 0.85%)</title><rect x="887.4" y="741" width="10.1" height="15.0" fill="rgb(254,227,15)" rx="2" ry="2" />
+<text  x="890.44" y="751.5" ></text>
+</g>
+<g >
+<title>MainThread`_path_importer_cache (1 samples, 0.85%)</title><rect x="1038.7" y="645" width="10.1" height="15.0" fill="rgb(247,202,29)" rx="2" ry="2" />
+<text  x="1041.72" y="655.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_spec (2 samples, 1.71%)</title><rect x="978.2" y="789" width="20.2" height="15.0" fill="rgb(220,181,4)" rx="2" ry="2" />
+<text  x="981.21" y="799.5" ></text>
+</g>
+<g >
+<title>MainThread`_path_importer_cache (1 samples, 0.85%)</title><rect x="958.0" y="213" width="10.1" height="15.0" fill="rgb(244,197,9)" rx="2" ry="2" />
+<text  x="961.03" y="223.5" ></text>
+</g>
+<g >
+<title>MainThread`find_spec (1 samples, 0.85%)</title><rect x="272.2" y="437" width="10.1" height="15.0" fill="rgb(236,122,18)" rx="2" ry="2" />
+<text  x="275.22" y="447.5" ></text>
+</g>
+<g >
+<title>MainThread`exec_module (4 samples, 3.42%)</title><rect x="161.3" y="933" width="40.3" height="15.0" fill="rgb(245,39,52)" rx="2" ry="2" />
+<text  x="164.28" y="943.5" >Mai..</text>
+</g>
+<g >
+<title>MainThread`_find_and_load (1 samples, 0.85%)</title><rect x="1008.5" y="581" width="10.0" height="15.0" fill="rgb(222,141,31)" rx="2" ry="2" />
+<text  x="1011.46" y="591.5" ></text>
+</g>
+<g >
+<title>MainThread`_path_isfile (1 samples, 0.85%)</title><rect x="463.8" y="1029" width="10.1" height="15.0" fill="rgb(251,145,46)" rx="2" ry="2" />
+<text  x="466.85" y="1039.5" ></text>
+</g>
+<g >
+<title>MainThread`_call_with_frames_removed (1 samples, 0.85%)</title><rect x="1008.5" y="549" width="10.0" height="15.0" fill="rgb(227,45,48)" rx="2" ry="2" />
+<text  x="1011.46" y="559.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_and_load (1 samples, 0.85%)</title><rect x="80.6" y="789" width="10.1" height="15.0" fill="rgb(246,61,22)" rx="2" ry="2" />
+<text  x="83.60" y="799.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_spec (1 samples, 0.85%)</title><rect x="262.1" y="853" width="10.1" height="15.0" fill="rgb(220,77,48)" rx="2" ry="2" />
+<text  x="265.14" y="863.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_and_load_unlocked (4 samples, 3.42%)</title><rect x="937.9" y="565" width="40.3" height="15.0" fill="rgb(246,174,19)" rx="2" ry="2" />
+<text  x="940.86" y="575.5" >Mai..</text>
+</g>
+<g >
+<title>MainThread`_call_with_frames_removed (1 samples, 0.85%)</title><rect x="373.1" y="677" width="10.1" height="15.0" fill="rgb(254,21,25)" rx="2" ry="2" />
+<text  x="376.08" y="687.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_and_load_unlocked (6 samples, 5.13%)</title><rect x="272.2" y="501" width="60.5" height="15.0" fill="rgb(221,150,38)" rx="2" ry="2" />
+<text  x="275.22" y="511.5" >MainTh..</text>
+</g>
+<g >
+<title>MainThread`&lt;module&gt; (1 samples, 0.85%)</title><rect x="917.7" y="405" width="10.1" height="15.0" fill="rgb(226,145,10)" rx="2" ry="2" />
+<text  x="920.69" y="415.5" ></text>
+</g>
+<g >
+<title>MainThread`_call_with_frames_removed (25 samples, 21.37%)</title><rect x="857.2" y="1221" width="252.1" height="15.0" fill="rgb(242,19,42)" rx="2" ry="2" />
+<text  x="860.18" y="1231.5" >MainThread`_call_with_frames_remo..</text>
+</g>
+<g >
+<title>MainThread`_get_spec (1 samples, 0.85%)</title><rect x="80.6" y="725" width="10.1" height="15.0" fill="rgb(222,106,52)" rx="2" ry="2" />
+<text  x="83.60" y="735.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_and_load_unlocked (8 samples, 6.84%)</title><rect x="272.2" y="773" width="80.7" height="15.0" fill="rgb(223,98,22)" rx="2" ry="2" />
+<text  x="275.22" y="783.5" >MainThrea..</text>
+</g>
+<g >
+<title>MainThread`exec_module (8 samples, 6.84%)</title><rect x="897.5" y="757" width="80.7" height="15.0" fill="rgb(252,133,22)" rx="2" ry="2" />
+<text  x="900.52" y="767.5" >MainThrea..</text>
+</g>
+<g >
+<title>MainThread`_path_hooks (1 samples, 0.85%)</title><rect x="927.8" y="581" width="10.1" height="15.0" fill="rgb(236,164,22)" rx="2" ry="2" />
+<text  x="930.78" y="591.5" ></text>
+</g>
+<g >
+<title>MainThread`_get_spec (1 samples, 0.85%)</title><rect x="363.0" y="773" width="10.1" height="15.0" fill="rgb(217,78,9)" rx="2" ry="2" />
+<text  x="365.99" y="783.5" ></text>
+</g>
+<g >
+<title>MainThread`_call_with_frames_removed (5 samples, 4.27%)</title><rect x="282.3" y="453" width="50.4" height="15.0" fill="rgb(213,116,35)" rx="2" ry="2" />
+<text  x="285.31" y="463.5" >MainT..</text>
+</g>
+<g >
+<title>MainThread`find_spec (1 samples, 0.85%)</title><rect x="504.2" y="853" width="10.1" height="15.0" fill="rgb(252,86,23)" rx="2" ry="2" />
+<text  x="507.19" y="863.5" ></text>
+</g>
+<g >
+<title>MainThread`find_spec (1 samples, 0.85%)</title><rect x="1008.5" y="485" width="10.0" height="15.0" fill="rgb(217,78,40)" rx="2" ry="2" />
+<text  x="1011.46" y="495.5" ></text>
+</g>
+<g >
+<title>MainThread`&lt;module&gt; (117 samples, 100.00%)</title><rect x="10.0" y="1557" width="1180.0" height="15.0" fill="rgb(249,107,1)" rx="2" ry="2" />
+<text  x="13.00" y="1567.5" >MainThread`&lt;module&gt;</text>
+</g>
+<g >
+<title>MainThread`_find_spec (1 samples, 0.85%)</title><rect x="90.7" y="693" width="10.1" height="15.0" fill="rgb(238,87,28)" rx="2" ry="2" />
+<text  x="93.68" y="703.5" ></text>
+</g>
+<g >
+<title>MainThread`_call_with_frames_removed (22 samples, 18.80%)</title><rect x="867.3" y="1125" width="221.8" height="15.0" fill="rgb(207,224,23)" rx="2" ry="2" />
+<text  x="870.26" y="1135.5" >MainThread`_call_with_frames_..</text>
+</g>
+<g >
+<title>MainThread`_call_with_frames_removed (1 samples, 0.85%)</title><rect x="312.6" y="325" width="10.0" height="15.0" fill="rgb(238,4,6)" rx="2" ry="2" />
+<text  x="315.56" y="335.5" ></text>
+</g>
+<g >
+<title>MainThread`_handle_fromlist (1 samples, 0.85%)</title><rect x="403.3" y="1029" width="10.1" height="15.0" fill="rgb(215,76,34)" rx="2" ry="2" />
+<text  x="406.33" y="1039.5" ></text>
+</g>
+<g >
+<title>MainThread`&lt;module&gt; (2 samples, 1.71%)</title><rect x="373.1" y="757" width="20.1" height="15.0" fill="rgb(236,90,7)" rx="2" ry="2" />
+<text  x="376.08" y="767.5" ></text>
+</g>
+<g >
+<title>MainThread`&lt;module&gt; (1 samples, 0.85%)</title><rect x="342.8" y="261" width="10.1" height="15.0" fill="rgb(243,162,22)" rx="2" ry="2" />
+<text  x="345.82" y="271.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_and_load (1 samples, 0.85%)</title><rect x="201.6" y="709" width="10.1" height="15.0" fill="rgb(234,16,12)" rx="2" ry="2" />
+<text  x="204.62" y="719.5" ></text>
+</g>
+<g >
+<title>MainThread`_call_with_frames_removed (1 samples, 0.85%)</title><rect x="120.9" y="1045" width="10.1" height="15.0" fill="rgb(208,33,15)" rx="2" ry="2" />
+<text  x="123.94" y="1055.5" ></text>
+</g>
+<g >
+<title>MainThread`_path_stat (1 samples, 0.85%)</title><rect x="161.3" y="581" width="10.1" height="15.0" fill="rgb(244,74,1)" rx="2" ry="2" />
+<text  x="164.28" y="591.5" ></text>
+</g>
+<g >
+<title>MainThread`path_hook_for_FileFinder (1 samples, 0.85%)</title><rect x="927.8" y="565" width="10.1" height="15.0" fill="rgb(254,129,13)" rx="2" ry="2" />
+<text  x="930.78" y="575.5" ></text>
+</g>
+<g >
+<title>MainThread`module_from_spec (26 samples, 22.22%)</title><rect x="514.3" y="885" width="262.2" height="15.0" fill="rgb(220,166,28)" rx="2" ry="2" />
+<text  x="517.27" y="895.5" >MainThread`module_from_spec</text>
+</g>
+<g >
+<title>MainThread`start (1 samples, 0.85%)</title><rect x="1179.9" y="1525" width="10.1" height="15.0" fill="rgb(231,111,47)" rx="2" ry="2" />
+<text  x="1182.91" y="1535.5" ></text>
+</g>
+<g >
+<title>MainThread`find_spec (1 samples, 0.85%)</title><rect x="857.2" y="1109" width="10.1" height="15.0" fill="rgb(236,97,26)" rx="2" ry="2" />
+<text  x="860.18" y="1119.5" ></text>
+</g>
+<g >
+<title>MainThread`find_spec (2 samples, 1.71%)</title><rect x="141.1" y="1365" width="20.2" height="15.0" fill="rgb(232,4,23)" rx="2" ry="2" />
+<text  x="144.11" y="1375.5" ></text>
+</g>
+<g >
+<title>MainThread`_path_isfile (1 samples, 0.85%)</title><rect x="80.6" y="693" width="10.1" height="15.0" fill="rgb(226,206,16)" rx="2" ry="2" />
+<text  x="83.60" y="703.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_and_load_unlocked (6 samples, 5.13%)</title><rect x="161.3" y="1253" width="60.5" height="15.0" fill="rgb(213,139,32)" rx="2" ry="2" />
+<text  x="164.28" y="1263.5" >MainTh..</text>
+</g>
+<g >
+<title>MainThread`&lt;module&gt; (4 samples, 3.42%)</title><rect x="937.9" y="405" width="40.3" height="15.0" fill="rgb(227,173,44)" rx="2" ry="2" />
+<text  x="940.86" y="415.5" >Mai..</text>
+</g>
+<g >
+<title>MainThread`_get_spec (1 samples, 0.85%)</title><rect x="847.1" y="1221" width="10.1" height="15.0" fill="rgb(205,187,14)" rx="2" ry="2" />
+<text  x="850.09" y="1231.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_and_load_unlocked (1 samples, 0.85%)</title><rect x="1028.6" y="389" width="10.1" height="15.0" fill="rgb(236,196,25)" rx="2" ry="2" />
+<text  x="1031.63" y="399.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_and_load_unlocked (8 samples, 6.84%)</title><rect x="272.2" y="549" width="80.7" height="15.0" fill="rgb(228,165,38)" rx="2" ry="2" />
+<text  x="275.22" y="559.5" >MainThrea..</text>
+</g>
+<g >
+<title>MainThread`&lt;module&gt; (4 samples, 3.42%)</title><rect x="937.9" y="597" width="40.3" height="15.0" fill="rgb(238,168,8)" rx="2" ry="2" />
+<text  x="940.86" y="607.5" >Mai..</text>
+</g>
+<g >
+<title>MainThread`_find_and_load (28 samples, 23.93%)</title><rect x="494.1" y="1029" width="282.4" height="15.0" fill="rgb(235,215,9)" rx="2" ry="2" />
+<text  x="497.10" y="1039.5" >MainThread`_find_and_load</text>
+</g>
+<g >
+<title>MainThread`_find_and_load_unlocked (1 samples, 0.85%)</title><rect x="120.9" y="997" width="10.1" height="15.0" fill="rgb(231,36,50)" rx="2" ry="2" />
+<text  x="123.94" y="1007.5" ></text>
+</g>
+<g >
+<title>MainThread`find_spec (2 samples, 1.71%)</title><rect x="867.3" y="1013" width="20.1" height="15.0" fill="rgb(235,140,2)" rx="2" ry="2" />
+<text  x="870.26" y="1023.5" ></text>
+</g>
+<g >
+<title>MainThread`&lt;module&gt; (12 samples, 10.26%)</title><rect x="20.1" y="1285" width="121.0" height="15.0" fill="rgb(239,45,44)" rx="2" ry="2" />
+<text  x="23.09" y="1295.5" >MainThread`&lt;mod..</text>
+</g>
+<g >
+<title>MainThread`_find_and_load_unlocked (1 samples, 0.85%)</title><rect x="90.7" y="709" width="10.1" height="15.0" fill="rgb(254,136,33)" rx="2" ry="2" />
+<text  x="93.68" y="719.5" ></text>
+</g>
+<g >
+<title>MainThread`exec_module (1 samples, 0.85%)</title><rect x="201.6" y="997" width="10.1" height="15.0" fill="rgb(214,78,39)" rx="2" ry="2" />
+<text  x="204.62" y="1007.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_and_load (8 samples, 6.84%)</title><rect x="272.2" y="565" width="80.7" height="15.0" fill="rgb(252,89,9)" rx="2" ry="2" />
+<text  x="275.22" y="575.5" >MainThrea..</text>
+</g>
+<g >
+<title>MainThread`find_spec (1 samples, 0.85%)</title><rect x="252.1" y="949" width="10.0" height="15.0" fill="rgb(232,169,50)" rx="2" ry="2" />
+<text  x="255.05" y="959.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_spec (2 samples, 1.71%)</title><rect x="20.1" y="1237" width="20.2" height="15.0" fill="rgb(239,5,13)" rx="2" ry="2" />
+<text  x="23.09" y="1247.5" ></text>
+</g>
+<g >
+<title>MainThread`wrapper (1 samples, 0.85%)</title><rect x="322.6" y="341" width="10.1" height="15.0" fill="rgb(238,118,25)" rx="2" ry="2" />
+<text  x="325.65" y="351.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_and_load (1 samples, 0.85%)</title><rect x="201.6" y="901" width="10.1" height="15.0" fill="rgb(254,157,54)" rx="2" ry="2" />
+<text  x="204.62" y="911.5" ></text>
+</g>
+<g >
+<title>MainThread`_get_spec (1 samples, 0.85%)</title><rect x="332.7" y="405" width="10.1" height="15.0" fill="rgb(253,102,2)" rx="2" ry="2" />
+<text  x="335.74" y="415.5" ></text>
+</g>
+<g >
+<title>MainThread`_path_stat (1 samples, 0.85%)</title><rect x="40.3" y="1045" width="10.0" height="15.0" fill="rgb(208,62,23)" rx="2" ry="2" />
+<text  x="43.26" y="1055.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_and_load_unlocked (54 samples, 46.15%)</title><rect x="242.0" y="1205" width="544.6" height="15.0" fill="rgb(238,117,24)" rx="2" ry="2" />
+<text  x="244.97" y="1215.5" >MainThread`_find_and_load_unlocked</text>
+</g>
+<g >
+<title>MainThread`_get_spec (1 samples, 0.85%)</title><rect x="171.4" y="821" width="10.1" height="15.0" fill="rgb(239,96,49)" rx="2" ry="2" />
+<text  x="174.37" y="831.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_spec (1 samples, 0.85%)</title><rect x="120.9" y="885" width="10.1" height="15.0" fill="rgb(232,67,42)" rx="2" ry="2" />
+<text  x="123.94" y="895.5" ></text>
+</g>
+<g >
+<title>MainThread`module_from_spec (29 samples, 24.79%)</title><rect x="494.1" y="1077" width="292.5" height="15.0" fill="rgb(228,200,46)" rx="2" ry="2" />
+<text  x="497.10" y="1087.5" >MainThread`module_from_spec</text>
+</g>
+<g >
+<title>MainThread`exec_module (3 samples, 2.56%)</title><rect x="897.5" y="661" width="30.3" height="15.0" fill="rgb(241,173,17)" rx="2" ry="2" />
+<text  x="900.52" y="671.5" >Ma..</text>
+</g>
+<g >
+<title>MainThread`_find_spec (1 samples, 0.85%)</title><rect x="312.6" y="261" width="10.0" height="15.0" fill="rgb(205,228,10)" rx="2" ry="2" />
+<text  x="315.56" y="271.5" ></text>
+</g>
+<g >
+<title>MainThread`_path_is_mode_type (1 samples, 0.85%)</title><rect x="262.1" y="773" width="10.1" height="15.0" fill="rgb(217,57,53)" rx="2" ry="2" />
+<text  x="265.14" y="783.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_spec (1 samples, 0.85%)</title><rect x="1079.1" y="869" width="10.0" height="15.0" fill="rgb(231,35,15)" rx="2" ry="2" />
+<text  x="1082.06" y="879.5" ></text>
+</g>
+<g >
+<title>MainThread`_path_stat (1 samples, 0.85%)</title><rect x="927.8" y="517" width="10.1" height="15.0" fill="rgb(225,165,47)" rx="2" ry="2" />
+<text  x="930.78" y="527.5" ></text>
+</g>
+<g >
+<title>MainThread`_call_with_frames_removed (1 samples, 0.85%)</title><rect x="917.7" y="421" width="10.1" height="15.0" fill="rgb(222,56,51)" rx="2" ry="2" />
+<text  x="920.69" y="431.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_and_load (1 samples, 0.85%)</title><rect x="796.7" y="1205" width="10.1" height="15.0" fill="rgb(234,62,48)" rx="2" ry="2" />
+<text  x="799.67" y="1215.5" ></text>
+</g>
+<g >
+<title>MainThread`_get_spec (1 samples, 0.85%)</title><rect x="272.2" y="453" width="10.1" height="15.0" fill="rgb(246,137,48)" rx="2" ry="2" />
+<text  x="275.22" y="463.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_spec (1 samples, 0.85%)</title><rect x="272.2" y="485" width="10.1" height="15.0" fill="rgb(216,111,3)" rx="2" ry="2" />
+<text  x="275.22" y="495.5" ></text>
+</g>
+<g >
+<title>MainThread`_call_with_frames_removed (26 samples, 22.22%)</title><rect x="514.3" y="757" width="262.2" height="15.0" fill="rgb(242,147,36)" rx="2" ry="2" />
+<text  x="517.27" y="767.5" >MainThread`_call_with_frames_removed</text>
+</g>
+<g >
+<title>MainThread`create_module (27 samples, 23.08%)</title><rect x="504.2" y="965" width="272.3" height="15.0" fill="rgb(227,46,3)" rx="2" ry="2" />
+<text  x="507.19" y="975.5" >MainThread`create_module</text>
+</g>
+<g >
+<title>MainThread`_find_and_load_unlocked (1 samples, 0.85%)</title><rect x="1008.5" y="517" width="10.0" height="15.0" fill="rgb(226,171,20)" rx="2" ry="2" />
+<text  x="1011.46" y="527.5" ></text>
+</g>
+<g >
+<title>MainThread`_call_with_frames_removed (1 samples, 0.85%)</title><rect x="90.7" y="789" width="10.1" height="15.0" fill="rgb(250,223,48)" rx="2" ry="2" />
+<text  x="93.68" y="799.5" ></text>
+</g>
+<g >
+<title>MainThread`_call_with_frames_removed (1 samples, 0.85%)</title><rect x="342.8" y="405" width="10.1" height="15.0" fill="rgb(241,186,49)" rx="2" ry="2" />
+<text  x="345.82" y="415.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_and_load_unlocked (68 samples, 58.12%)</title><rect x="161.3" y="1301" width="685.8" height="15.0" fill="rgb(240,229,37)" rx="2" ry="2" />
+<text  x="164.28" y="1311.5" >MainThread`_find_and_load_unlocked</text>
+</g>
+<g >
+<title>MainThread`_get_config_or_cache_dir (1 samples, 0.85%)</title><rect x="322.6" y="357" width="10.1" height="15.0" fill="rgb(228,215,7)" rx="2" ry="2" />
+<text  x="325.65" y="367.5" ></text>
+</g>
+<g >
+<title>MainThread`_load_unlocked (3 samples, 2.56%)</title><rect x="897.5" y="677" width="30.3" height="15.0" fill="rgb(208,197,44)" rx="2" ry="2" />
+<text  x="900.52" y="687.5" >Ma..</text>
+</g>
+<g >
+<title>MainThread`_call_with_frames_removed (1 samples, 0.85%)</title><rect x="201.6" y="741" width="10.1" height="15.0" fill="rgb(239,31,20)" rx="2" ry="2" />
+<text  x="204.62" y="751.5" ></text>
+</g>
+<g >
+<title>MainThread`_call_with_frames_removed (20 samples, 17.09%)</title><rect x="887.4" y="1029" width="201.7" height="15.0" fill="rgb(249,29,16)" rx="2" ry="2" />
+<text  x="890.44" y="1039.5" >MainThread`_call_with_fram..</text>
+</g>
+<g >
+<title>MainThread`_find_and_load_unlocked (2 samples, 1.71%)</title><rect x="1119.4" y="1269" width="20.2" height="15.0" fill="rgb(231,183,28)" rx="2" ry="2" />
+<text  x="1122.40" y="1279.5" ></text>
+</g>
+<g >
+<title>MainThread`_path_importer_cache (1 samples, 0.85%)</title><rect x="927.8" y="597" width="10.1" height="15.0" fill="rgb(232,50,13)" rx="2" ry="2" />
+<text  x="930.78" y="607.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_and_load_unlocked (1 samples, 0.85%)</title><rect x="796.7" y="1093" width="10.1" height="15.0" fill="rgb(247,20,6)" rx="2" ry="2" />
+<text  x="799.67" y="1103.5" ></text>
+</g>
+<g >
+<title>MainThread`_call_with_frames_removed (1 samples, 0.85%)</title><rect x="90.7" y="869" width="10.1" height="15.0" fill="rgb(206,26,46)" rx="2" ry="2" />
+<text  x="93.68" y="879.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_and_load_unlocked (8 samples, 6.84%)</title><rect x="272.2" y="645" width="80.7" height="15.0" fill="rgb(241,98,37)" rx="2" ry="2" />
+<text  x="275.22" y="655.5" >MainThrea..</text>
+</g>
+<g >
+<title>MainThread`_load_unlocked (20 samples, 17.09%)</title><rect x="887.4" y="1061" width="201.7" height="15.0" fill="rgb(237,228,5)" rx="2" ry="2" />
+<text  x="890.44" y="1071.5" >MainThread`_load_unlocked</text>
+</g>
+<g >
+<title>MainThread`_find_spec (2 samples, 1.71%)</title><rect x="221.8" y="1285" width="20.2" height="15.0" fill="rgb(243,54,10)" rx="2" ry="2" />
+<text  x="224.79" y="1295.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_spec (1 samples, 0.85%)</title><rect x="786.6" y="1061" width="10.1" height="15.0" fill="rgb(239,173,24)" rx="2" ry="2" />
+<text  x="789.58" y="1071.5" ></text>
+</g>
+<g >
+<title>MainThread`_get_spec (1 samples, 0.85%)</title><rect x="1038.7" y="661" width="10.1" height="15.0" fill="rgb(220,11,12)" rx="2" ry="2" />
+<text  x="1041.72" y="671.5" ></text>
+</g>
+<g >
+<title>MainThread`_read (3 samples, 2.56%)</title><rect x="1149.7" y="1493" width="30.2" height="15.0" fill="rgb(217,124,45)" rx="2" ry="2" />
+<text  x="1152.66" y="1503.5" >Ma..</text>
+</g>
+<g >
+<title>MainThread`_load_unlocked (1 samples, 0.85%)</title><rect x="302.5" y="197" width="10.1" height="15.0" fill="rgb(237,6,34)" rx="2" ry="2" />
+<text  x="305.48" y="207.5" ></text>
+</g>
+<g >
+<title>MainThread`_load_unlocked (1 samples, 0.85%)</title><rect x="201.6" y="773" width="10.1" height="15.0" fill="rgb(239,11,6)" rx="2" ry="2" />
+<text  x="204.62" y="783.5" ></text>
+</g>
+<g >
+<title>MainThread`read (1 samples, 0.85%)</title><rect x="1169.8" y="1477" width="10.1" height="15.0" fill="rgb(215,142,7)" rx="2" ry="2" />
+<text  x="1172.83" y="1487.5" ></text>
+</g>
+<g >
+<title>MainThread`_path_isfile (1 samples, 0.85%)</title><rect x="70.5" y="885" width="10.1" height="15.0" fill="rgb(210,98,36)" rx="2" ry="2" />
+<text  x="73.51" y="895.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_and_load_unlocked (1 samples, 0.85%)</title><rect x="161.3" y="789" width="10.1" height="15.0" fill="rgb(214,76,54)" rx="2" ry="2" />
+<text  x="164.28" y="799.5" ></text>
+</g>
+<g >
+<title>MainThread`&lt;module&gt; (1 samples, 0.85%)</title><rect x="161.3" y="725" width="10.1" height="15.0" fill="rgb(223,198,17)" rx="2" ry="2" />
+<text  x="164.28" y="735.5" ></text>
+</g>
+<g >
+<title>MainThread`_get_spec (1 samples, 0.85%)</title><rect x="423.5" y="869" width="10.1" height="15.0" fill="rgb(247,98,7)" rx="2" ry="2" />
+<text  x="426.50" y="879.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_and_load (13 samples, 11.11%)</title><rect x="10.0" y="1365" width="131.1" height="15.0" fill="rgb(225,89,7)" rx="2" ry="2" />
+<text  x="13.00" y="1375.5" >MainThread`_find..</text>
+</g>
+<g >
+<title>MainThread`_call_with_frames_removed (4 samples, 3.42%)</title><rect x="937.9" y="421" width="40.3" height="15.0" fill="rgb(213,32,7)" rx="2" ry="2" />
+<text  x="940.86" y="431.5" >Mai..</text>
+</g>
+<g >
+<title>MainThread`find_spec (1 samples, 0.85%)</title><rect x="70.5" y="933" width="10.1" height="15.0" fill="rgb(229,218,46)" rx="2" ry="2" />
+<text  x="73.51" y="943.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_and_load (4 samples, 3.42%)</title><rect x="937.9" y="389" width="40.3" height="15.0" fill="rgb(215,226,36)" rx="2" ry="2" />
+<text  x="940.86" y="399.5" >Mai..</text>
+</g>
+<g >
+<title>MainThread`_path_is_mode_type (3 samples, 2.56%)</title><rect x="1048.8" y="885" width="30.3" height="15.0" fill="rgb(238,141,42)" rx="2" ry="2" />
+<text  x="1051.80" y="895.5" >Ma..</text>
+</g>
+<g >
+<title>MainThread`_find_spec (1 samples, 0.85%)</title><rect x="1028.6" y="373" width="10.1" height="15.0" fill="rgb(227,4,49)" rx="2" ry="2" />
+<text  x="1031.63" y="383.5" ></text>
+</g>
+<g >
+<title>MainThread`_call_with_frames_removed (32 samples, 27.35%)</title><rect x="463.8" y="1141" width="322.8" height="15.0" fill="rgb(206,25,18)" rx="2" ry="2" />
+<text  x="466.85" y="1151.5" >MainThread`_call_with_frames_removed</text>
+</g>
+<g >
+<title>MainThread`_call_with_frames_removed (1 samples, 0.85%)</title><rect x="342.8" y="357" width="10.1" height="15.0" fill="rgb(207,154,37)" rx="2" ry="2" />
+<text  x="345.82" y="367.5" ></text>
+</g>
+<g >
+<title>MainThread`_load_unlocked (1 samples, 0.85%)</title><rect x="302.5" y="293" width="10.1" height="15.0" fill="rgb(214,194,25)" rx="2" ry="2" />
+<text  x="305.48" y="303.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_spec (1 samples, 0.85%)</title><rect x="776.5" y="965" width="10.1" height="15.0" fill="rgb(245,66,6)" rx="2" ry="2" />
+<text  x="779.50" y="975.5" ></text>
+</g>
+<g >
+<title>MainThread`find_spec (1 samples, 0.85%)</title><rect x="171.4" y="805" width="10.1" height="15.0" fill="rgb(232,80,16)" rx="2" ry="2" />
+<text  x="174.37" y="815.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_and_load (110 samples, 94.02%)</title><rect x="10.0" y="1413" width="1109.4" height="15.0" fill="rgb(232,49,23)" rx="2" ry="2" />
+<text  x="13.00" y="1423.5" >MainThread`_find_and_load</text>
+</g>
+<g >
+<title>MainThread`_load_unlocked (1 samples, 0.85%)</title><rect x="968.1" y="261" width="10.1" height="15.0" fill="rgb(247,84,34)" rx="2" ry="2" />
+<text  x="971.12" y="271.5" ></text>
+</g>
+<g >
+<title>MainThread`create_module (26 samples, 22.22%)</title><rect x="514.3" y="869" width="262.2" height="15.0" fill="rgb(225,76,8)" rx="2" ry="2" />
+<text  x="517.27" y="879.5" >MainThread`create_module</text>
+</g>
+<g >
+<title>MainThread`&lt;module&gt; (5 samples, 4.27%)</title><rect x="161.3" y="1093" width="50.4" height="15.0" fill="rgb(240,199,40)" rx="2" ry="2" />
+<text  x="164.28" y="1103.5" >MainT..</text>
+</g>
+<g >
+<title>MainThread`_find_and_load (22 samples, 18.80%)</title><rect x="867.3" y="1093" width="221.8" height="15.0" fill="rgb(219,202,44)" rx="2" ry="2" />
+<text  x="870.26" y="1103.5" >MainThread`_find_and_load</text>
+</g>
+<g >
+<title>MainThread`module_from_spec (2 samples, 1.71%)</title><rect x="1119.4" y="1333" width="20.2" height="15.0" fill="rgb(253,211,46)" rx="2" ry="2" />
+<text  x="1122.40" y="1343.5" ></text>
+</g>
+<g >
+<title>MainThread`&lt;module&gt; (3 samples, 2.56%)</title><rect x="897.5" y="629" width="30.3" height="15.0" fill="rgb(238,69,51)" rx="2" ry="2" />
+<text  x="900.52" y="639.5" >Ma..</text>
+</g>
+<g >
+<title>MainThread`exec_module (1 samples, 0.85%)</title><rect x="342.8" y="197" width="10.1" height="15.0" fill="rgb(244,50,39)" rx="2" ry="2" />
+<text  x="345.82" y="207.5" ></text>
+</g>
+<g >
+<title>MainThread`_path_isfile (1 samples, 0.85%)</title><rect x="110.9" y="1013" width="10.0" height="15.0" fill="rgb(217,147,10)" rx="2" ry="2" />
+<text  x="113.85" y="1023.5" ></text>
+</g>
+<g >
+<title>MainThread`_path_stat (1 samples, 0.85%)</title><rect x="1099.2" y="1029" width="10.1" height="15.0" fill="rgb(235,224,20)" rx="2" ry="2" />
+<text  x="1102.23" y="1039.5" ></text>
+</g>
+<g >
+<title>MainThread`_path_stat (1 samples, 0.85%)</title><rect x="796.7" y="981" width="10.1" height="15.0" fill="rgb(240,138,5)" rx="2" ry="2" />
+<text  x="799.67" y="991.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_and_load_unlocked (1 samples, 0.85%)</title><rect x="342.8" y="229" width="10.1" height="15.0" fill="rgb(220,27,42)" rx="2" ry="2" />
+<text  x="345.82" y="239.5" ></text>
+</g>
+<g >
+<title>MainThread`find_spec (1 samples, 0.85%)</title><rect x="110.9" y="1061" width="10.0" height="15.0" fill="rgb(252,9,14)" rx="2" ry="2" />
+<text  x="113.85" y="1071.5" ></text>
+</g>
+<g >
+<title>MainThread`_cython_agg_blocks (1 samples, 0.85%)</title><rect x="1139.6" y="1477" width="10.1" height="15.0" fill="rgb(229,216,23)" rx="2" ry="2" />
+<text  x="1142.57" y="1487.5" ></text>
+</g>
+<g >
+<title>MainThread`_path_stat (1 samples, 0.85%)</title><rect x="352.9" y="805" width="10.1" height="15.0" fill="rgb(253,147,2)" rx="2" ry="2" />
+<text  x="355.91" y="815.5" ></text>
+</g>
+<g >
+<title>MainThread`_call_with_frames_removed (1 samples, 0.85%)</title><rect x="1028.6" y="533" width="10.1" height="15.0" fill="rgb(233,17,43)" rx="2" ry="2" />
+<text  x="1031.63" y="543.5" ></text>
+</g>
+<g >
+<title>MainThread`find_spec (1 samples, 0.85%)</title><rect x="958.0" y="245" width="10.1" height="15.0" fill="rgb(254,225,50)" rx="2" ry="2" />
+<text  x="961.03" y="255.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_and_load (1 samples, 0.85%)</title><rect x="776.5" y="997" width="10.1" height="15.0" fill="rgb(211,194,3)" rx="2" ry="2" />
+<text  x="779.50" y="1007.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_and_load (27 samples, 23.08%)</title><rect x="504.2" y="933" width="272.3" height="15.0" fill="rgb(213,124,29)" rx="2" ry="2" />
+<text  x="507.19" y="943.5" >MainThread`_find_and_load</text>
+</g>
+<g >
+<title>MainThread`_path_stat (1 samples, 0.85%)</title><rect x="10.0" y="1269" width="10.1" height="15.0" fill="rgb(233,81,39)" rx="2" ry="2" />
+<text  x="13.00" y="1279.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_and_load (1 samples, 0.85%)</title><rect x="302.5" y="229" width="10.1" height="15.0" fill="rgb(214,102,21)" rx="2" ry="2" />
+<text  x="305.48" y="239.5" ></text>
+</g>
+<g >
+<title>MainThread`_path_stat (1 samples, 0.85%)</title><rect x="877.4" y="997" width="10.0" height="15.0" fill="rgb(245,78,15)" rx="2" ry="2" />
+<text  x="880.35" y="1007.5" ></text>
+</g>
+<g >
+<title>MainThread`_handle_fromlist (8 samples, 6.84%)</title><rect x="272.2" y="693" width="80.7" height="15.0" fill="rgb(233,14,3)" rx="2" ry="2" />
+<text  x="275.22" y="703.5" >MainThrea..</text>
+</g>
+<g >
+<title>MainThread`exec_module (3 samples, 2.56%)</title><rect x="373.1" y="789" width="30.2" height="15.0" fill="rgb(227,210,24)" rx="2" ry="2" />
+<text  x="376.08" y="799.5" >Ma..</text>
+</g>
+<g >
+<title>MainThread`_path_stat (1 samples, 0.85%)</title><rect x="947.9" y="293" width="10.1" height="15.0" fill="rgb(221,37,52)" rx="2" ry="2" />
+<text  x="950.95" y="303.5" ></text>
+</g>
+<g >
+<title>MainThread`exec_module (4 samples, 3.42%)</title><rect x="363.0" y="885" width="40.3" height="15.0" fill="rgb(206,105,28)" rx="2" ry="2" />
+<text  x="365.99" y="895.5" >Mai..</text>
+</g>
+<g >
+<title>MainThread`exec_module (8 samples, 6.84%)</title><rect x="272.2" y="741" width="80.7" height="15.0" fill="rgb(211,180,25)" rx="2" ry="2" />
+<text  x="275.22" y="751.5" >MainThrea..</text>
+</g>
+<g >
+<title>MainThread`_find_and_load (9 samples, 7.69%)</title><rect x="262.1" y="885" width="90.8" height="15.0" fill="rgb(241,147,40)" rx="2" ry="2" />
+<text  x="265.14" y="895.5" >MainThread..</text>
+</g>
+<g >
+<title>MainThread`get_data (1 samples, 0.85%)</title><rect x="201.6" y="629" width="10.1" height="15.0" fill="rgb(205,18,12)" rx="2" ry="2" />
+<text  x="204.62" y="639.5" ></text>
+</g>
+<g >
+<title>MainThread`find_spec (1 samples, 0.85%)</title><rect x="110.9" y="1029" width="10.0" height="15.0" fill="rgb(211,73,41)" rx="2" ry="2" />
+<text  x="113.85" y="1039.5" ></text>
+</g>
+<g >
+<title>MainThread`read (1 samples, 0.85%)</title><rect x="1169.8" y="1461" width="10.1" height="15.0" fill="rgb(217,207,13)" rx="2" ry="2" />
+<text  x="1172.83" y="1471.5" ></text>
+</g>
+<g >
+<title>MainThread`_get_spec (1 samples, 0.85%)</title><rect x="252.1" y="965" width="10.0" height="15.0" fill="rgb(212,114,33)" rx="2" ry="2" />
+<text  x="255.05" y="975.5" ></text>
+</g>
+<g >
+<title>MainThread`_call_with_frames_removed (1 samples, 0.85%)</title><rect x="403.3" y="869" width="10.1" height="15.0" fill="rgb(207,196,32)" rx="2" ry="2" />
+<text  x="406.33" y="879.5" ></text>
+</g>
+<g >
+<title>MainThread`_get_home (1 samples, 0.85%)</title><rect x="322.6" y="325" width="10.1" height="15.0" fill="rgb(218,195,27)" rx="2" ry="2" />
+<text  x="325.65" y="335.5" ></text>
+</g>
+<g >
+<title>MainThread`_load_unlocked (1 samples, 0.85%)</title><rect x="342.8" y="437" width="10.1" height="15.0" fill="rgb(248,111,7)" rx="2" ry="2" />
+<text  x="345.82" y="447.5" ></text>
+</g>
+<g >
+<title>MainThread`get_data (1 samples, 0.85%)</title><rect x="211.7" y="1093" width="10.1" height="15.0" fill="rgb(243,173,29)" rx="2" ry="2" />
+<text  x="214.71" y="1103.5" ></text>
+</g>
+<g >
+<title>MainThread`_get_spec (3 samples, 2.56%)</title><rect x="463.8" y="1061" width="30.3" height="15.0" fill="rgb(223,65,54)" rx="2" ry="2" />
+<text  x="466.85" y="1071.5" >Ma..</text>
+</g>
+<g >
+<title>MainThread`_call_with_frames_removed (2 samples, 1.71%)</title><rect x="161.3" y="917" width="20.2" height="15.0" fill="rgb(211,84,38)" rx="2" ry="2" />
+<text  x="164.28" y="927.5" ></text>
+</g>
+<g >
+<title>MainThread`find_spec (1 samples, 0.85%)</title><rect x="60.4" y="1029" width="10.1" height="15.0" fill="rgb(220,59,19)" rx="2" ry="2" />
+<text  x="63.43" y="1039.5" ></text>
+</g>
+<g >
+<title>MainThread`find_spec (2 samples, 1.71%)</title><rect x="20.1" y="1221" width="20.2" height="15.0" fill="rgb(235,45,13)" rx="2" ry="2" />
+<text  x="23.09" y="1231.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_and_load_unlocked (1 samples, 0.85%)</title><rect x="1079.1" y="885" width="10.0" height="15.0" fill="rgb(238,55,43)" rx="2" ry="2" />
+<text  x="1082.06" y="895.5" ></text>
+</g>
+<g >
+<title>MainThread`exec_module (20 samples, 17.09%)</title><rect x="887.4" y="1045" width="201.7" height="15.0" fill="rgb(229,202,30)" rx="2" ry="2" />
+<text  x="890.44" y="1055.5" >MainThread`exec_module</text>
+</g>
+<g >
+<title>MainThread`exec_module (1 samples, 0.85%)</title><rect x="342.8" y="293" width="10.1" height="15.0" fill="rgb(209,60,10)" rx="2" ry="2" />
+<text  x="345.82" y="303.5" ></text>
+</g>
+<g >
+<title>MainThread`_path_is_mode_type (1 samples, 0.85%)</title><rect x="796.7" y="997" width="10.1" height="15.0" fill="rgb(214,35,1)" rx="2" ry="2" />
+<text  x="799.67" y="1007.5" ></text>
+</g>
+<g >
+<title>MainThread`_path_is_mode_type (1 samples, 0.85%)</title><rect x="80.6" y="677" width="10.1" height="15.0" fill="rgb(228,122,9)" rx="2" ry="2" />
+<text  x="83.60" y="687.5" ></text>
+</g>
+<g >
+<title>MainThread`_load_unlocked (4 samples, 3.42%)</title><rect x="937.9" y="645" width="40.3" height="15.0" fill="rgb(210,213,1)" rx="2" ry="2" />
+<text  x="940.86" y="655.5" >Mai..</text>
+</g>
+<g >
+<title>MainThread`_load_unlocked (5 samples, 4.27%)</title><rect x="60.4" y="1141" width="50.5" height="15.0" fill="rgb(230,210,11)" rx="2" ry="2" />
+<text  x="63.43" y="1151.5" >MainT..</text>
+</g>
+<g >
+<title>MainThread`_path_isfile (1 samples, 0.85%)</title><rect x="887.4" y="709" width="10.1" height="15.0" fill="rgb(231,48,10)" rx="2" ry="2" />
+<text  x="890.44" y="719.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_and_load (8 samples, 6.84%)</title><rect x="272.2" y="789" width="80.7" height="15.0" fill="rgb(242,13,43)" rx="2" ry="2" />
+<text  x="275.22" y="799.5" >MainThrea..</text>
+</g>
+<g >
+<title>MainThread`_find_and_load_unlocked (1 samples, 0.85%)</title><rect x="796.7" y="1189" width="10.1" height="15.0" fill="rgb(231,27,11)" rx="2" ry="2" />
+<text  x="799.67" y="1199.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_and_load (24 samples, 20.51%)</title><rect x="857.2" y="1189" width="242.0" height="15.0" fill="rgb(240,12,27)" rx="2" ry="2" />
+<text  x="860.18" y="1199.5" >MainThread`_find_and_load</text>
+</g>
+<g >
+<title>MainThread`find_spec (1 samples, 0.85%)</title><rect x="907.6" y="437" width="10.1" height="15.0" fill="rgb(209,219,17)" rx="2" ry="2" />
+<text  x="910.61" y="447.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_and_load (1 samples, 0.85%)</title><rect x="201.6" y="949" width="10.1" height="15.0" fill="rgb(244,214,38)" rx="2" ry="2" />
+<text  x="204.62" y="959.5" ></text>
+</g>
+<g >
+<title>MainThread`&lt;module&gt; (20 samples, 17.09%)</title><rect x="887.4" y="1013" width="201.7" height="15.0" fill="rgb(229,44,50)" rx="2" ry="2" />
+<text  x="890.44" y="1023.5" >MainThread`&lt;module&gt;</text>
+</g>
+<g >
+<title>MainThread`find_spec (1 samples, 0.85%)</title><rect x="373.1" y="597" width="10.1" height="15.0" fill="rgb(205,103,27)" rx="2" ry="2" />
+<text  x="376.08" y="607.5" ></text>
+</g>
+<g >
+<title>MainThread`matplotlib_fname (1 samples, 0.85%)</title><rect x="322.6" y="405" width="10.1" height="15.0" fill="rgb(238,35,37)" rx="2" ry="2" />
+<text  x="325.65" y="415.5" ></text>
+</g>
+<g >
+<title>MainThread`exec_module (3 samples, 2.56%)</title><rect x="897.5" y="565" width="30.3" height="15.0" fill="rgb(233,20,28)" rx="2" ry="2" />
+<text  x="900.52" y="575.5" >Ma..</text>
+</g>
+<g >
+<title>MainThread`_path_stat (1 samples, 0.85%)</title><rect x="30.2" y="1109" width="10.1" height="15.0" fill="rgb(246,127,44)" rx="2" ry="2" />
+<text  x="33.17" y="1119.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_and_load_unlocked (32 samples, 27.35%)</title><rect x="463.8" y="1109" width="322.8" height="15.0" fill="rgb(213,6,2)" rx="2" ry="2" />
+<text  x="466.85" y="1119.5" >MainThread`_find_and_load_unlocked</text>
+</g>
+<g >
+<title>MainThread`_call_with_frames_removed (26 samples, 22.22%)</title><rect x="514.3" y="853" width="262.2" height="15.0" fill="rgb(239,148,28)" rx="2" ry="2" />
+<text  x="517.27" y="863.5" >MainThread`_call_with_frames_removed</text>
+</g>
+<g >
+<title>MainThread`_path_importer_cache (1 samples, 0.85%)</title><rect x="60.4" y="997" width="10.1" height="15.0" fill="rgb(240,226,25)" rx="2" ry="2" />
+<text  x="63.43" y="1007.5" ></text>
+</g>
+<g >
+<title>MainThread`_load_unlocked (1 samples, 0.85%)</title><rect x="342.8" y="213" width="10.1" height="15.0" fill="rgb(213,133,18)" rx="2" ry="2" />
+<text  x="345.82" y="223.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_and_load_unlocked (1 samples, 0.85%)</title><rect x="917.7" y="469" width="10.1" height="15.0" fill="rgb(253,115,25)" rx="2" ry="2" />
+<text  x="920.69" y="479.5" ></text>
+</g>
+<g >
+<title>MainThread`_call_with_frames_removed (12 samples, 10.26%)</title><rect x="20.1" y="1301" width="121.0" height="15.0" fill="rgb(246,88,19)" rx="2" ry="2" />
+<text  x="23.09" y="1311.5" >MainThread`_cal..</text>
+</g>
+<g >
+<title>MainThread`find_spec (2 samples, 1.71%)</title><rect x="937.9" y="341" width="20.1" height="15.0" fill="rgb(223,65,33)" rx="2" ry="2" />
+<text  x="940.86" y="351.5" ></text>
+</g>
+<g >
+<title>MainThread`_load_unlocked (1 samples, 0.85%)</title><rect x="1028.6" y="469" width="10.1" height="15.0" fill="rgb(213,214,1)" rx="2" ry="2" />
+<text  x="1031.63" y="479.5" ></text>
+</g>
+<g >
+<title>MainThread`&lt;module&gt; (1 samples, 0.85%)</title><rect x="1159.7" y="1333" width="10.1" height="15.0" fill="rgb(254,17,29)" rx="2" ry="2" />
+<text  x="1162.74" y="1343.5" ></text>
+</g>
+<g >
+<title>MainThread`find_spec (2 samples, 1.71%)</title><rect x="40.3" y="1125" width="20.1" height="15.0" fill="rgb(234,90,5)" rx="2" ry="2" />
+<text  x="43.26" y="1135.5" ></text>
+</g>
+<g >
+<title>MainThread`_path_stat (1 samples, 0.85%)</title><rect x="141.1" y="1285" width="10.1" height="15.0" fill="rgb(231,73,16)" rx="2" ry="2" />
+<text  x="144.11" y="1295.5" ></text>
+</g>
+<g >
+<title>MainThread`_call_with_frames_removed (1 samples, 0.85%)</title><rect x="201.6" y="1061" width="10.1" height="15.0" fill="rgb(248,40,4)" rx="2" ry="2" />
+<text  x="204.62" y="1071.5" ></text>
+</g>
+<g >
+<title>MainThread`_path_importer_cache (1 samples, 0.85%)</title><rect x="937.9" y="309" width="10.0" height="15.0" fill="rgb(219,177,1)" rx="2" ry="2" />
+<text  x="940.86" y="319.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_spec (1 samples, 0.85%)</title><rect x="423.5" y="901" width="10.1" height="15.0" fill="rgb(243,98,21)" rx="2" ry="2" />
+<text  x="426.50" y="911.5" ></text>
+</g>
+<g >
+<title>MainThread`exec_module (1 samples, 0.85%)</title><rect x="968.1" y="245" width="10.1" height="15.0" fill="rgb(252,89,2)" rx="2" ry="2" />
+<text  x="971.12" y="255.5" ></text>
+</g>
+<g >
+<title>MainThread`create_module (2 samples, 1.71%)</title><rect x="1119.4" y="1317" width="20.2" height="15.0" fill="rgb(228,48,0)" rx="2" ry="2" />
+<text  x="1122.40" y="1327.5" ></text>
+</g>
+<g >
+<title>MainThread`_call_with_frames_removed (2 samples, 1.71%)</title><rect x="1119.4" y="1397" width="20.2" height="15.0" fill="rgb(238,145,26)" rx="2" ry="2" />
+<text  x="1122.40" y="1407.5" ></text>
+</g>
+<g >
+<title>MainThread`&lt;module&gt; (1 samples, 0.85%)</title><rect x="342.8" y="389" width="10.1" height="15.0" fill="rgb(244,3,14)" rx="2" ry="2" />
+<text  x="345.82" y="399.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_and_load_unlocked (1 samples, 0.85%)</title><rect x="796.7" y="1141" width="10.1" height="15.0" fill="rgb(211,126,51)" rx="2" ry="2" />
+<text  x="799.67" y="1151.5" ></text>
+</g>
+<g >
+<title>MainThread`_get_spec (1 samples, 0.85%)</title><rect x="262.1" y="821" width="10.1" height="15.0" fill="rgb(248,83,13)" rx="2" ry="2" />
+<text  x="265.14" y="831.5" ></text>
+</g>
+<g >
+<title>MainThread`exec_module (1 samples, 0.85%)</title><rect x="161.3" y="757" width="10.1" height="15.0" fill="rgb(240,136,9)" rx="2" ry="2" />
+<text  x="164.28" y="767.5" ></text>
+</g>
+<g >
+<title>MainThread`exec_module (3 samples, 2.56%)</title><rect x="70.5" y="1029" width="30.3" height="15.0" fill="rgb(250,160,51)" rx="2" ry="2" />
+<text  x="73.51" y="1039.5" >Ma..</text>
+</g>
+<g >
+<title>MainThread`_find_and_load (1 samples, 0.85%)</title><rect x="90.7" y="853" width="10.1" height="15.0" fill="rgb(210,53,17)" rx="2" ry="2" />
+<text  x="93.68" y="863.5" ></text>
+</g>
+<g >
+<title>MainThread`_call_with_frames_removed (16 samples, 13.68%)</title><rect x="887.4" y="965" width="161.4" height="15.0" fill="rgb(228,80,26)" rx="2" ry="2" />
+<text  x="890.44" y="975.5" >MainThread`_call_wit..</text>
+</g>
+<g >
+<title>MainThread`_load_unlocked (1 samples, 0.85%)</title><rect x="80.6" y="853" width="10.1" height="15.0" fill="rgb(252,44,28)" rx="2" ry="2" />
+<text  x="83.60" y="863.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_and_load_unlocked (1 samples, 0.85%)</title><rect x="120.9" y="901" width="10.1" height="15.0" fill="rgb(248,97,24)" rx="2" ry="2" />
+<text  x="123.94" y="911.5" ></text>
+</g>
+<g >
+<title>MainThread`_path_stat (1 samples, 0.85%)</title><rect x="110.9" y="981" width="10.0" height="15.0" fill="rgb(239,220,26)" rx="2" ry="2" />
+<text  x="113.85" y="991.5" ></text>
+</g>
+<g >
+<title>MainThread`&lt;module&gt; (1 samples, 0.85%)</title><rect x="1079.1" y="917" width="10.0" height="15.0" fill="rgb(227,149,3)" rx="2" ry="2" />
+<text  x="1082.06" y="927.5" ></text>
+</g>
+<g >
+<title>MainThread`_call_with_frames_removed (3 samples, 2.56%)</title><rect x="282.3" y="357" width="30.3" height="15.0" fill="rgb(214,146,50)" rx="2" ry="2" />
+<text  x="285.31" y="367.5" >Ma..</text>
+</g>
+<g >
+<title>MainThread`_find_spec (3 samples, 2.56%)</title><rect x="1048.8" y="965" width="30.3" height="15.0" fill="rgb(245,122,32)" rx="2" ry="2" />
+<text  x="1051.80" y="975.5" >Ma..</text>
+</g>
+<g >
+<title>MainThread`_path_importer_cache (1 samples, 0.85%)</title><rect x="897.5" y="437" width="10.1" height="15.0" fill="rgb(212,1,30)" rx="2" ry="2" />
+<text  x="900.52" y="447.5" ></text>
+</g>
+<g >
+<title>MainThread`&lt;module&gt; (8 samples, 6.84%)</title><rect x="272.2" y="581" width="80.7" height="15.0" fill="rgb(221,124,18)" rx="2" ry="2" />
+<text  x="275.22" y="591.5" >MainThrea..</text>
+</g>
+<g >
+<title>MainThread`_call_with_frames_removed (1 samples, 0.85%)</title><rect x="423.5" y="949" width="10.1" height="15.0" fill="rgb(235,210,12)" rx="2" ry="2" />
+<text  x="426.50" y="959.5" ></text>
+</g>
+<g >
+<title>MainThread`&lt;module&gt; (1 samples, 0.85%)</title><rect x="373.1" y="661" width="10.1" height="15.0" fill="rgb(215,111,49)" rx="2" ry="2" />
+<text  x="376.08" y="671.5" ></text>
+</g>
+<g >
+<title>MainThread`wait (1 samples, 0.85%)</title><rect x="1179.9" y="1509" width="10.1" height="15.0" fill="rgb(254,133,14)" rx="2" ry="2" />
+<text  x="1182.91" y="1519.5" ></text>
+</g>
+<g >
+<title>MainThread`_path_stat (2 samples, 1.71%)</title><rect x="473.9" y="1029" width="20.2" height="15.0" fill="rgb(216,196,46)" rx="2" ry="2" />
+<text  x="476.93" y="1039.5" ></text>
+</g>
+<g >
+<title>MainThread`extract_stack (1 samples, 0.85%)</title><rect x="302.5" y="69" width="10.1" height="15.0" fill="rgb(233,118,25)" rx="2" ry="2" />
+<text  x="305.48" y="79.5" ></text>
+</g>
+<g >
+<title>MainThread`_call_with_frames_removed (1 samples, 0.85%)</title><rect x="796.7" y="1125" width="10.1" height="15.0" fill="rgb(224,17,34)" rx="2" ry="2" />
+<text  x="799.67" y="1135.5" ></text>
+</g>
+<g >
+<title>MainThread`_load_unlocked (2 samples, 1.71%)</title><rect x="373.1" y="709" width="20.1" height="15.0" fill="rgb(206,162,10)" rx="2" ry="2" />
+<text  x="376.08" y="719.5" ></text>
+</g>
+<g >
+<title>MainThread`_call_with_frames_removed (1 samples, 0.85%)</title><rect x="1159.7" y="1349" width="10.1" height="15.0" fill="rgb(247,201,10)" rx="2" ry="2" />
+<text  x="1162.74" y="1359.5" ></text>
+</g>
+<g >
+<title>MainThread`_call_with_frames_removed (2 samples, 1.71%)</title><rect x="373.1" y="773" width="20.1" height="15.0" fill="rgb(229,35,31)" rx="2" ry="2" />
+<text  x="376.08" y="783.5" ></text>
+</g>
+<g >
+<title>MainThread`exec_module (1 samples, 0.85%)</title><rect x="342.8" y="421" width="10.1" height="15.0" fill="rgb(227,93,21)" rx="2" ry="2" />
+<text  x="345.82" y="431.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_spec (1 samples, 0.85%)</title><rect x="927.8" y="645" width="10.1" height="15.0" fill="rgb(224,70,15)" rx="2" ry="2" />
+<text  x="930.78" y="655.5" ></text>
+</g>
+<g >
+<title>MainThread`find_spec (1 samples, 0.85%)</title><rect x="423.5" y="885" width="10.1" height="15.0" fill="rgb(224,197,43)" rx="2" ry="2" />
+<text  x="426.50" y="895.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_spec (1 samples, 0.85%)</title><rect x="1038.7" y="693" width="10.1" height="15.0" fill="rgb(244,130,37)" rx="2" ry="2" />
+<text  x="1041.72" y="703.5" ></text>
+</g>
+<g >
+<title>MainThread`_path_stat (1 samples, 0.85%)</title><rect x="231.9" y="1221" width="10.1" height="15.0" fill="rgb(254,1,42)" rx="2" ry="2" />
+<text  x="234.88" y="1231.5" ></text>
+</g>
+<g >
+<title>MainThread`_path_is_mode_type (1 samples, 0.85%)</title><rect x="141.1" y="1301" width="10.1" height="15.0" fill="rgb(219,67,12)" rx="2" ry="2" />
+<text  x="144.11" y="1311.5" ></text>
+</g>
+<g >
+<title>MainThread`_path_isdir (1 samples, 0.85%)</title><rect x="927.8" y="549" width="10.1" height="15.0" fill="rgb(239,121,41)" rx="2" ry="2" />
+<text  x="930.78" y="559.5" ></text>
+</g>
+<g >
+<title>MainThread`_call_with_frames_removed (56 samples, 47.86%)</title><rect x="242.0" y="1253" width="564.8" height="15.0" fill="rgb(214,227,12)" rx="2" ry="2" />
+<text  x="244.97" y="1263.5" >MainThread`_call_with_frames_removed</text>
+</g>
+<g >
+<title>MainThread`exec_module (16 samples, 13.68%)</title><rect x="887.4" y="901" width="161.4" height="15.0" fill="rgb(209,150,52)" rx="2" ry="2" />
+<text  x="890.44" y="911.5" >MainThread`exec_module</text>
+</g>
+<g >
+<title>MainThread`_find_spec (1 samples, 0.85%)</title><rect x="494.1" y="997" width="10.1" height="15.0" fill="rgb(206,210,12)" rx="2" ry="2" />
+<text  x="497.10" y="1007.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_and_load_unlocked (1 samples, 0.85%)</title><rect x="373.1" y="629" width="10.1" height="15.0" fill="rgb(238,73,23)" rx="2" ry="2" />
+<text  x="376.08" y="639.5" ></text>
+</g>
+<g >
+<title>MainThread`_call_with_frames_removed (26 samples, 22.22%)</title><rect x="847.1" y="1301" width="262.2" height="15.0" fill="rgb(238,89,23)" rx="2" ry="2" />
+<text  x="850.09" y="1311.5" >MainThread`_call_with_frames_removed</text>
+</g>
+<g >
+<title>MainThread`_find_and_load (2 samples, 1.71%)</title><rect x="897.5" y="517" width="20.2" height="15.0" fill="rgb(231,85,26)" rx="2" ry="2" />
+<text  x="900.52" y="527.5" ></text>
+</g>
+<g >
+<title>MainThread`exec_module (25 samples, 21.37%)</title><rect x="857.2" y="1237" width="252.1" height="15.0" fill="rgb(239,143,50)" rx="2" ry="2" />
+<text  x="860.18" y="1247.5" >MainThread`exec_module</text>
+</g>
+<g >
+<title>MainThread`_find_and_load (1 samples, 0.85%)</title><rect x="342.8" y="341" width="10.1" height="15.0" fill="rgb(251,161,44)" rx="2" ry="2" />
+<text  x="345.82" y="351.5" ></text>
+</g>
+<g >
+<title>MainThread`get_data (2 samples, 1.71%)</title><rect x="433.6" y="1141" width="20.2" height="15.0" fill="rgb(244,217,38)" rx="2" ry="2" />
+<text  x="436.59" y="1151.5" ></text>
+</g>
+<g >
+<title>MainThread`path_stats (1 samples, 0.85%)</title><rect x="131.0" y="1157" width="10.1" height="15.0" fill="rgb(242,102,14)" rx="2" ry="2" />
+<text  x="134.03" y="1167.5" ></text>
+</g>
+<g >
+<title>MainThread`main (117 samples, 100.00%)</title><rect x="10.0" y="1541" width="1180.0" height="15.0" fill="rgb(207,87,48)" rx="2" ry="2" />
+<text  x="13.00" y="1551.5" >MainThread`main</text>
+</g>
+<g >
+<title>MainThread`_find_spec (1 samples, 0.85%)</title><rect x="1099.2" y="1125" width="10.1" height="15.0" fill="rgb(234,48,19)" rx="2" ry="2" />
+<text  x="1102.23" y="1135.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_spec (1 samples, 0.85%)</title><rect x="504.2" y="901" width="10.1" height="15.0" fill="rgb(240,8,31)" rx="2" ry="2" />
+<text  x="507.19" y="911.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_spec (1 samples, 0.85%)</title><rect x="1018.5" y="597" width="10.1" height="15.0" fill="rgb(243,187,28)" rx="2" ry="2" />
+<text  x="1021.55" y="607.5" ></text>
+</g>
+<g >
+<title>MainThread`_call_with_frames_removed (8 samples, 6.84%)</title><rect x="272.2" y="821" width="80.7" height="15.0" fill="rgb(239,213,46)" rx="2" ry="2" />
+<text  x="275.22" y="831.5" >MainThrea..</text>
+</g>
+<g >
+<title>MainThread`_load_unlocked (1 samples, 0.85%)</title><rect x="201.6" y="869" width="10.1" height="15.0" fill="rgb(248,160,28)" rx="2" ry="2" />
+<text  x="204.62" y="879.5" ></text>
+</g>
+<g >
+<title>MainThread`_get_spec (1 samples, 0.85%)</title><rect x="998.4" y="661" width="10.1" height="15.0" fill="rgb(254,96,43)" rx="2" ry="2" />
+<text  x="1001.38" y="671.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_and_load_unlocked (3 samples, 2.56%)</title><rect x="897.5" y="693" width="30.3" height="15.0" fill="rgb(224,34,54)" rx="2" ry="2" />
+<text  x="900.52" y="703.5" >Ma..</text>
+</g>
+<g >
+<title>MainThread`_call_with_frames_removed (1 samples, 0.85%)</title><rect x="1028.6" y="613" width="10.1" height="15.0" fill="rgb(250,124,41)" rx="2" ry="2" />
+<text  x="1031.63" y="623.5" ></text>
+</g>
+<g >
+<title>MainThread`_get_spec (1 samples, 0.85%)</title><rect x="857.2" y="1125" width="10.1" height="15.0" fill="rgb(239,37,33)" rx="2" ry="2" />
+<text  x="860.18" y="1135.5" ></text>
+</g>
+<g >
+<title>MainThread`_handle_fromlist (1 samples, 0.85%)</title><rect x="312.6" y="421" width="10.0" height="15.0" fill="rgb(213,23,29)" rx="2" ry="2" />
+<text  x="315.56" y="431.5" ></text>
+</g>
+<g >
+<title>MainThread`get_data (1 samples, 0.85%)</title><rect x="100.8" y="1093" width="10.1" height="15.0" fill="rgb(221,144,46)" rx="2" ry="2" />
+<text  x="103.77" y="1103.5" ></text>
+</g>
+<g >
+<title>MainThread`_get_spec (1 samples, 0.85%)</title><rect x="1079.1" y="837" width="10.0" height="15.0" fill="rgb(216,117,32)" rx="2" ry="2" />
+<text  x="1082.06" y="847.5" ></text>
+</g>
+<g >
+<title>MainThread`_call_with_frames_removed (1 samples, 0.85%)</title><rect x="302.5" y="165" width="10.1" height="15.0" fill="rgb(219,212,8)" rx="2" ry="2" />
+<text  x="305.48" y="175.5" ></text>
+</g>
+<g >
+<title>MainThread`&lt;module&gt; (4 samples, 3.42%)</title><rect x="363.0" y="853" width="40.3" height="15.0" fill="rgb(225,85,21)" rx="2" ry="2" />
+<text  x="365.99" y="863.5" >Mai..</text>
+</g>
+<g >
+<title>MainThread`_find_spec (2 samples, 1.71%)</title><rect x="282.3" y="293" width="20.2" height="15.0" fill="rgb(231,190,40)" rx="2" ry="2" />
+<text  x="285.31" y="303.5" ></text>
+</g>
+<g >
+<title>MainThread`isfile (1 samples, 0.85%)</title><rect x="1159.7" y="1189" width="10.1" height="15.0" fill="rgb(235,42,38)" rx="2" ry="2" />
+<text  x="1162.74" y="1199.5" ></text>
+</g>
+<g >
+<title>MainThread`_path_stat (1 samples, 0.85%)</title><rect x="463.8" y="997" width="10.1" height="15.0" fill="rgb(205,90,11)" rx="2" ry="2" />
+<text  x="466.85" y="1007.5" ></text>
+</g>
+<g >
+<title>MainThread`_handle_fromlist (1 samples, 0.85%)</title><rect x="1099.2" y="1189" width="10.1" height="15.0" fill="rgb(245,40,32)" rx="2" ry="2" />
+<text  x="1102.23" y="1199.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_and_load_unlocked (16 samples, 13.68%)</title><rect x="242.0" y="1013" width="161.3" height="15.0" fill="rgb(242,139,39)" rx="2" ry="2" />
+<text  x="244.97" y="1023.5" >MainThread`_find_and..</text>
+</g>
+<g >
+<title>MainThread`_find_and_load (1 samples, 0.85%)</title><rect x="120.9" y="1013" width="10.1" height="15.0" fill="rgb(222,132,29)" rx="2" ry="2" />
+<text  x="123.94" y="1023.5" ></text>
+</g>
+<g >
+<title>MainThread`extract_stack (1 samples, 0.85%)</title><rect x="302.5" y="85" width="10.1" height="15.0" fill="rgb(231,222,1)" rx="2" ry="2" />
+<text  x="305.48" y="95.5" ></text>
+</g>
+<g >
+<title>MainThread`_call_with_frames_removed (1 samples, 0.85%)</title><rect x="1099.2" y="1173" width="10.1" height="15.0" fill="rgb(234,223,10)" rx="2" ry="2" />
+<text  x="1102.23" y="1183.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_and_load (8 samples, 6.84%)</title><rect x="272.2" y="661" width="80.7" height="15.0" fill="rgb(237,35,9)" rx="2" ry="2" />
+<text  x="275.22" y="671.5" >MainThrea..</text>
+</g>
+<g >
+<title>MainThread`module_from_spec (26 samples, 22.22%)</title><rect x="514.3" y="789" width="262.2" height="15.0" fill="rgb(219,148,12)" rx="2" ry="2" />
+<text  x="517.27" y="799.5" >MainThread`module_from_spec</text>
+</g>
+<g >
+<title>MainThread`&lt;module&gt; (2 samples, 1.71%)</title><rect x="80.6" y="901" width="20.2" height="15.0" fill="rgb(252,79,42)" rx="2" ry="2" />
+<text  x="83.60" y="911.5" ></text>
+</g>
+<g >
+<title>MainThread`&lt;module&gt; (5 samples, 4.27%)</title><rect x="282.3" y="437" width="50.4" height="15.0" fill="rgb(225,76,7)" rx="2" ry="2" />
+<text  x="285.31" y="447.5" >MainT..</text>
+</g>
+<g >
+<title>MainThread`find_spec (1 samples, 0.85%)</title><rect x="1079.1" y="853" width="10.0" height="15.0" fill="rgb(211,132,34)" rx="2" ry="2" />
+<text  x="1082.06" y="863.5" ></text>
+</g>
+<g >
+<title>MainThread`&lt;module&gt; (1 samples, 0.85%)</title><rect x="1028.6" y="517" width="10.1" height="15.0" fill="rgb(237,95,52)" rx="2" ry="2" />
+<text  x="1031.63" y="527.5" ></text>
+</g>
+<g >
+<title>MainThread`&lt;module&gt; (1 samples, 0.85%)</title><rect x="201.6" y="821" width="10.1" height="15.0" fill="rgb(208,99,14)" rx="2" ry="2" />
+<text  x="204.62" y="831.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_and_load (6 samples, 5.13%)</title><rect x="161.3" y="1269" width="60.5" height="15.0" fill="rgb(233,19,9)" rx="2" ry="2" />
+<text  x="164.28" y="1279.5" >MainTh..</text>
+</g>
+<g >
+<title>MainThread`exec_module (1 samples, 0.85%)</title><rect x="1079.1" y="949" width="10.0" height="15.0" fill="rgb(249,96,16)" rx="2" ry="2" />
+<text  x="1082.06" y="959.5" ></text>
+</g>
+<g >
+<title>MainThread`_handle_fromlist (7 samples, 5.98%)</title><rect x="978.2" y="853" width="70.6" height="15.0" fill="rgb(222,115,46)" rx="2" ry="2" />
+<text  x="981.21" y="863.5" >MainThr..</text>
+</g>
+<g >
+<title>MainThread`_find_and_load (9 samples, 7.69%)</title><rect x="20.1" y="1269" width="90.8" height="15.0" fill="rgb(207,0,25)" rx="2" ry="2" />
+<text  x="23.09" y="1279.5" >MainThread..</text>
+</g>
+<g >
+<title>MainThread`_find_and_load_unlocked (2 samples, 1.71%)</title><rect x="332.7" y="453" width="20.2" height="15.0" fill="rgb(231,143,47)" rx="2" ry="2" />
+<text  x="335.74" y="463.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_and_load (1 samples, 0.85%)</title><rect x="786.6" y="1189" width="10.1" height="15.0" fill="rgb(205,168,6)" rx="2" ry="2" />
+<text  x="789.58" y="1199.5" ></text>
+</g>
+<g >
+<title>MainThread`_path_stat (1 samples, 0.85%)</title><rect x="272.2" y="389" width="10.1" height="15.0" fill="rgb(235,186,14)" rx="2" ry="2" />
+<text  x="275.22" y="399.5" ></text>
+</g>
+<g >
+<title>MainThread`create_module (1 samples, 0.85%)</title><rect x="423.5" y="1061" width="10.1" height="15.0" fill="rgb(218,187,34)" rx="2" ry="2" />
+<text  x="426.50" y="1071.5" ></text>
+</g>
+<g >
+<title>MainThread`get_code (1 samples, 0.85%)</title><rect x="201.6" y="645" width="10.1" height="15.0" fill="rgb(235,91,18)" rx="2" ry="2" />
+<text  x="204.62" y="655.5" ></text>
+</g>
+<g >
+<title>MainThread`&lt;module&gt; (2 samples, 1.71%)</title><rect x="332.7" y="485" width="20.2" height="15.0" fill="rgb(205,28,6)" rx="2" ry="2" />
+<text  x="335.74" y="495.5" ></text>
+</g>
+<g >
+<title>MainThread`_path_stat (1 samples, 0.85%)</title><rect x="131.0" y="1141" width="10.1" height="15.0" fill="rgb(223,98,35)" rx="2" ry="2" />
+<text  x="134.03" y="1151.5" ></text>
+</g>
+<g >
+<title>MainThread`get_code (1 samples, 0.85%)</title><rect x="413.4" y="1061" width="10.1" height="15.0" fill="rgb(222,118,10)" rx="2" ry="2" />
+<text  x="416.42" y="1071.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_and_load_unlocked (4 samples, 3.42%)</title><rect x="998.4" y="709" width="40.3" height="15.0" fill="rgb(235,129,15)" rx="2" ry="2" />
+<text  x="1001.38" y="719.5" >Mai..</text>
+</g>
+<g >
+<title>MainThread`checkcache (1 samples, 0.85%)</title><rect x="302.5" y="37" width="10.1" height="15.0" fill="rgb(244,101,29)" rx="2" ry="2" />
+<text  x="305.48" y="47.5" ></text>
+</g>
+<g >
+<title>MainThread`_load_unlocked (1 samples, 0.85%)</title><rect x="201.6" y="1013" width="10.1" height="15.0" fill="rgb(207,71,19)" rx="2" ry="2" />
+<text  x="204.62" y="1023.5" ></text>
+</g>
+<g >
+<title>MainThread`_call_with_frames_removed (1 samples, 0.85%)</title><rect x="242.0" y="997" width="10.1" height="15.0" fill="rgb(252,86,24)" rx="2" ry="2" />
+<text  x="244.97" y="1007.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_and_load (1 samples, 0.85%)</title><rect x="1159.7" y="1317" width="10.1" height="15.0" fill="rgb(244,22,38)" rx="2" ry="2" />
+<text  x="1162.74" y="1327.5" ></text>
+</g>
+<g >
+<title>MainThread`pyparsing_common (1 samples, 0.85%)</title><rect x="302.5" y="133" width="10.1" height="15.0" fill="rgb(248,160,47)" rx="2" ry="2" />
+<text  x="305.48" y="143.5" ></text>
+</g>
+<g >
+<title>MainThread`module_from_spec (1 samples, 0.85%)</title><rect x="423.5" y="1077" width="10.1" height="15.0" fill="rgb(216,25,2)" rx="2" ry="2" />
+<text  x="426.50" y="1087.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_and_load_unlocked (27 samples, 23.08%)</title><rect x="504.2" y="917" width="272.3" height="15.0" fill="rgb(222,165,41)" rx="2" ry="2" />
+<text  x="507.19" y="927.5" >MainThread`_find_and_load_unlocked</text>
+</g>
+<g >
+<title>MainThread`_call_with_frames_removed (2 samples, 1.71%)</title><rect x="80.6" y="917" width="20.2" height="15.0" fill="rgb(250,213,8)" rx="2" ry="2" />
+<text  x="83.60" y="927.5" ></text>
+</g>
+<g >
+<title>MainThread`_call_with_frames_removed (94 samples, 80.34%)</title><rect x="161.3" y="1349" width="948.0" height="15.0" fill="rgb(243,36,48)" rx="2" ry="2" />
+<text  x="164.28" y="1359.5" >MainThread`_call_with_frames_removed</text>
+</g>
+<g >
+<title>MainThread`_path_is_mode_type (1 samples, 0.85%)</title><rect x="867.3" y="981" width="10.1" height="15.0" fill="rgb(253,25,35)" rx="2" ry="2" />
+<text  x="870.26" y="991.5" ></text>
+</g>
+<g >
+<title>MainThread`find_spec (1 samples, 0.85%)</title><rect x="272.2" y="469" width="10.1" height="15.0" fill="rgb(234,187,45)" rx="2" ry="2" />
+<text  x="275.22" y="479.5" ></text>
+</g>
+<g >
+<title>MainThread`&lt;module&gt; (3 samples, 2.56%)</title><rect x="70.5" y="997" width="30.3" height="15.0" fill="rgb(208,10,0)" rx="2" ry="2" />
+<text  x="73.51" y="1007.5" >Ma..</text>
+</g>
+<g >
+<title>MainThread`_load_unlocked (1 samples, 0.85%)</title><rect x="161.3" y="773" width="10.1" height="15.0" fill="rgb(253,125,14)" rx="2" ry="2" />
+<text  x="164.28" y="783.5" ></text>
+</g>
+<g >
+<title>MainThread`_load_unlocked (1 samples, 0.85%)</title><rect x="1159.7" y="1285" width="10.1" height="15.0" fill="rgb(206,49,35)" rx="2" ry="2" />
+<text  x="1162.74" y="1295.5" ></text>
+</g>
+<g >
+<title>MainThread`_path_stat (1 samples, 0.85%)</title><rect x="363.0" y="741" width="10.1" height="15.0" fill="rgb(232,5,10)" rx="2" ry="2" />
+<text  x="365.99" y="751.5" ></text>
+</g>
+<g >
+<title>MainThread`_call_with_frames_removed (6 samples, 5.13%)</title><rect x="272.2" y="533" width="60.5" height="15.0" fill="rgb(218,18,41)" rx="2" ry="2" />
+<text  x="275.22" y="543.5" >MainTh..</text>
+</g>
+<g >
+<title>MainThread`_find_and_load_unlocked (1 samples, 0.85%)</title><rect x="403.3" y="885" width="10.1" height="15.0" fill="rgb(206,71,13)" rx="2" ry="2" />
+<text  x="406.33" y="895.5" ></text>
+</g>
+<g >
+<title>MainThread`find_spec (1 samples, 0.85%)</title><rect x="120.9" y="869" width="10.1" height="15.0" fill="rgb(231,96,33)" rx="2" ry="2" />
+<text  x="123.94" y="879.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_spec (1 samples, 0.85%)</title><rect x="958.0" y="261" width="10.1" height="15.0" fill="rgb(247,81,38)" rx="2" ry="2" />
+<text  x="961.03" y="271.5" ></text>
+</g>
+<g >
+<title>MainThread`find_spec (1 samples, 0.85%)</title><rect x="423.5" y="853" width="10.1" height="15.0" fill="rgb(239,55,11)" rx="2" ry="2" />
+<text  x="426.50" y="863.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_and_load (3 samples, 2.56%)</title><rect x="70.5" y="981" width="30.3" height="15.0" fill="rgb(238,39,9)" rx="2" ry="2" />
+<text  x="73.51" y="991.5" >Ma..</text>
+</g>
+<g >
+<title>MainThread`_find_and_load_unlocked (26 samples, 22.22%)</title><rect x="514.3" y="821" width="262.2" height="15.0" fill="rgb(224,111,33)" rx="2" ry="2" />
+<text  x="517.27" y="831.5" >MainThread`_find_and_load_unlocked</text>
+</g>
+<g >
+<title>MainThread`_path_is_mode_type (1 samples, 0.85%)</title><rect x="887.4" y="693" width="10.1" height="15.0" fill="rgb(232,59,50)" rx="2" ry="2" />
+<text  x="890.44" y="703.5" ></text>
+</g>
+<g >
+<title>MainThread`_call_with_frames_removed (2 samples, 1.71%)</title><rect x="958.0" y="325" width="20.2" height="15.0" fill="rgb(253,65,16)" rx="2" ry="2" />
+<text  x="961.03" y="335.5" ></text>
+</g>
+<g >
+<title>MainThread`&lt;module&gt; (1 samples, 0.85%)</title><rect x="302.5" y="245" width="10.1" height="15.0" fill="rgb(229,150,21)" rx="2" ry="2" />
+<text  x="305.48" y="255.5" ></text>
+</g>
+<g >
+<title>MainThread`_load_unlocked (1 samples, 0.85%)</title><rect x="90.7" y="821" width="10.1" height="15.0" fill="rgb(215,202,39)" rx="2" ry="2" />
+<text  x="93.68" y="831.5" ></text>
+</g>
+<g >
+<title>MainThread`_call_with_frames_removed (2 samples, 1.71%)</title><rect x="110.9" y="1125" width="20.1" height="15.0" fill="rgb(212,200,50)" rx="2" ry="2" />
+<text  x="113.85" y="1135.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_and_load (1 samples, 0.85%)</title><rect x="423.5" y="981" width="10.1" height="15.0" fill="rgb(234,85,48)" rx="2" ry="2" />
+<text  x="426.50" y="991.5" ></text>
+</g>
+<g >
+<title>MainThread`_get_spec (1 samples, 0.85%)</title><rect x="786.6" y="1029" width="10.1" height="15.0" fill="rgb(236,128,25)" rx="2" ry="2" />
+<text  x="789.58" y="1039.5" ></text>
+</g>
+<g >
+<title>MainThread`_call_with_frames_removed (29 samples, 24.79%)</title><rect x="494.1" y="1045" width="292.5" height="15.0" fill="rgb(209,155,15)" rx="2" ry="2" />
+<text  x="497.10" y="1055.5" >MainThread`_call_with_frames_removed</text>
+</g>
+<g >
+<title>MainThread`_load_unlocked (112 samples, 95.73%)</title><rect x="10.0" y="1477" width="1129.6" height="15.0" fill="rgb(243,38,15)" rx="2" ry="2" />
+<text  x="13.00" y="1487.5" >MainThread`_load_unlocked</text>
+</g>
+<g >
+<title>MainThread`_find_and_load (1 samples, 0.85%)</title><rect x="786.6" y="1093" width="10.1" height="15.0" fill="rgb(220,93,25)" rx="2" ry="2" />
+<text  x="789.58" y="1103.5" ></text>
+</g>
+<g >
+<title>MainThread`pandas_dtype (1 samples, 0.85%)</title><rect x="161.3" y="853" width="10.1" height="15.0" fill="rgb(230,127,51)" rx="2" ry="2" />
+<text  x="164.28" y="863.5" ></text>
+</g>
+<g >
+<title>MainThread`_call_with_frames_removed (8 samples, 6.84%)</title><rect x="272.2" y="597" width="80.7" height="15.0" fill="rgb(213,228,40)" rx="2" ry="2" />
+<text  x="275.22" y="607.5" >MainThrea..</text>
+</g>
+<g >
+<title>MainThread`_find_and_load (3 samples, 2.56%)</title><rect x="897.5" y="613" width="30.3" height="15.0" fill="rgb(235,185,51)" rx="2" ry="2" />
+<text  x="900.52" y="623.5" >Ma..</text>
+</g>
+<g >
+<title>MainThread`_find_and_load (1 samples, 0.85%)</title><rect x="403.3" y="997" width="10.1" height="15.0" fill="rgb(210,56,32)" rx="2" ry="2" />
+<text  x="406.33" y="1007.5" ></text>
+</g>
+<g >
+<title>MainThread`_call_with_frames_removed (2 samples, 1.71%)</title><rect x="1119.4" y="1301" width="20.2" height="15.0" fill="rgb(237,62,9)" rx="2" ry="2" />
+<text  x="1122.40" y="1311.5" ></text>
+</g>
+<g >
+<title>MainThread`_path_stat (1 samples, 0.85%)</title><rect x="221.8" y="1189" width="10.1" height="15.0" fill="rgb(250,125,18)" rx="2" ry="2" />
+<text  x="224.79" y="1199.5" ></text>
+</g>
+<g >
+<title>MainThread`_load_unlocked (1 samples, 0.85%)</title><rect x="312.6" y="357" width="10.0" height="15.0" fill="rgb(219,125,54)" rx="2" ry="2" />
+<text  x="315.56" y="367.5" ></text>
+</g>
+<g >
+<title>MainThread`exec_module (1 samples, 0.85%)</title><rect x="1159.7" y="1365" width="10.1" height="15.0" fill="rgb(214,115,40)" rx="2" ry="2" />
+<text  x="1162.74" y="1375.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_and_load_unlocked (1 samples, 0.85%)</title><rect x="423.5" y="965" width="10.1" height="15.0" fill="rgb(245,207,41)" rx="2" ry="2" />
+<text  x="426.50" y="975.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_spec (1 samples, 0.85%)</title><rect x="796.7" y="1077" width="10.1" height="15.0" fill="rgb(212,172,10)" rx="2" ry="2" />
+<text  x="799.67" y="1087.5" ></text>
+</g>
+<g >
+<title>MainThread`_call_with_frames_removed (7 samples, 5.98%)</title><rect x="40.3" y="1205" width="70.6" height="15.0" fill="rgb(230,150,19)" rx="2" ry="2" />
+<text  x="43.26" y="1215.5" >MainThr..</text>
+</g>
+<g >
+<title>MainThread`_load_unlocked (1 samples, 0.85%)</title><rect x="120.9" y="1077" width="10.1" height="15.0" fill="rgb(253,120,19)" rx="2" ry="2" />
+<text  x="123.94" y="1087.5" ></text>
+</g>
+<g >
+<title>MainThread`_call_with_frames_removed (3 samples, 2.56%)</title><rect x="110.9" y="1253" width="30.2" height="15.0" fill="rgb(221,162,5)" rx="2" ry="2" />
+<text  x="113.85" y="1263.5" >Ma..</text>
+</g>
+<g >
+<title>MainThread`_path_isfile (1 samples, 0.85%)</title><rect x="373.1" y="549" width="10.1" height="15.0" fill="rgb(218,45,16)" rx="2" ry="2" />
+<text  x="376.08" y="559.5" ></text>
+</g>
+<g >
+<title>MainThread`find_spec (2 samples, 1.71%)</title><rect x="978.2" y="741" width="20.2" height="15.0" fill="rgb(250,58,7)" rx="2" ry="2" />
+<text  x="981.21" y="751.5" ></text>
+</g>
+<g >
+<title>MainThread`find_spec (1 samples, 0.85%)</title><rect x="1099.2" y="1109" width="10.1" height="15.0" fill="rgb(237,148,19)" rx="2" ry="2" />
+<text  x="1102.23" y="1119.5" ></text>
+</g>
+<g >
+<title>MainThread`find_spec (2 samples, 1.71%)</title><rect x="282.3" y="277" width="20.2" height="15.0" fill="rgb(245,19,37)" rx="2" ry="2" />
+<text  x="285.31" y="287.5" ></text>
+</g>
+<g >
+<title>MainThread`find_spec (1 samples, 0.85%)</title><rect x="1079.1" y="821" width="10.0" height="15.0" fill="rgb(229,114,10)" rx="2" ry="2" />
+<text  x="1082.06" y="831.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_and_load (16 samples, 13.68%)</title><rect x="887.4" y="949" width="161.4" height="15.0" fill="rgb(228,49,52)" rx="2" ry="2" />
+<text  x="890.44" y="959.5" >MainThread`_find_and..</text>
+</g>
+<g >
+<title>MainThread`_find_and_load_unlocked (7 samples, 5.98%)</title><rect x="40.3" y="1157" width="70.6" height="15.0" fill="rgb(235,68,10)" rx="2" ry="2" />
+<text  x="43.26" y="1167.5" >MainThr..</text>
+</g>
+<g >
+<title>MainThread`find_spec (2 samples, 1.71%)</title><rect x="221.8" y="1269" width="20.2" height="15.0" fill="rgb(244,17,49)" rx="2" ry="2" />
+<text  x="224.79" y="1279.5" ></text>
+</g>
+<g >
+<title>MainThread`find_spec (1 samples, 0.85%)</title><rect x="10.0" y="1317" width="10.1" height="15.0" fill="rgb(253,229,5)" rx="2" ry="2" />
+<text  x="13.00" y="1327.5" ></text>
+</g>
+<g >
+<title>MainThread`_get_spec (1 samples, 0.85%)</title><rect x="10.0" y="1301" width="10.1" height="15.0" fill="rgb(218,205,54)" rx="2" ry="2" />
+<text  x="13.00" y="1311.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_and_load_unlocked (20 samples, 17.09%)</title><rect x="887.4" y="981" width="201.7" height="15.0" fill="rgb(223,109,38)" rx="2" ry="2" />
+<text  x="890.44" y="991.5" >MainThread`_find_and_load_..</text>
+</g>
+<g >
+<title>MainThread`find_spec (1 samples, 0.85%)</title><rect x="494.1" y="981" width="10.1" height="15.0" fill="rgb(246,88,26)" rx="2" ry="2" />
+<text  x="497.10" y="991.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_spec (2 samples, 1.71%)</title><rect x="867.3" y="1061" width="20.1" height="15.0" fill="rgb(229,152,36)" rx="2" ry="2" />
+<text  x="870.26" y="1071.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_and_load_unlocked (1 samples, 0.85%)</title><rect x="171.4" y="869" width="10.1" height="15.0" fill="rgb(219,8,4)" rx="2" ry="2" />
+<text  x="174.37" y="879.5" ></text>
+</g>
+<g >
+<title>MainThread`_path_is_mode_type (1 samples, 0.85%)</title><rect x="1079.1" y="789" width="10.0" height="15.0" fill="rgb(213,148,45)" rx="2" ry="2" />
+<text  x="1082.06" y="799.5" ></text>
+</g>
+<g >
+<title>MainThread`_path_isdir (1 samples, 0.85%)</title><rect x="30.2" y="1141" width="10.1" height="15.0" fill="rgb(243,56,7)" rx="2" ry="2" />
+<text  x="33.17" y="1151.5" ></text>
+</g>
+<g >
+<title>MainThread`_call_with_frames_removed (1 samples, 0.85%)</title><rect x="776.5" y="1013" width="10.1" height="15.0" fill="rgb(232,172,5)" rx="2" ry="2" />
+<text  x="779.50" y="1023.5" ></text>
+</g>
+<g >
+<title>MainThread`_path_hooks (1 samples, 0.85%)</title><rect x="30.2" y="1173" width="10.1" height="15.0" fill="rgb(230,80,30)" rx="2" ry="2" />
+<text  x="33.17" y="1183.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_and_load_unlocked (1 samples, 0.85%)</title><rect x="917.7" y="373" width="10.1" height="15.0" fill="rgb(231,152,19)" rx="2" ry="2" />
+<text  x="920.69" y="383.5" ></text>
+</g>
+<g >
+<title>MainThread`get_code (1 samples, 0.85%)</title><rect x="383.2" y="677" width="10.0" height="15.0" fill="rgb(227,101,12)" rx="2" ry="2" />
+<text  x="386.16" y="687.5" ></text>
+</g>
+<g >
+<title>MainThread`_call_with_frames_removed (19 samples, 16.24%)</title><rect x="242.0" y="1157" width="191.6" height="15.0" fill="rgb(214,70,7)" rx="2" ry="2" />
+<text  x="244.97" y="1167.5" >MainThread`_call_with_fra..</text>
+</g>
+<g >
+<title>MainThread`find_spec (1 samples, 0.85%)</title><rect x="847.1" y="1237" width="10.1" height="15.0" fill="rgb(248,6,9)" rx="2" ry="2" />
+<text  x="850.09" y="1247.5" ></text>
+</g>
+<g >
+<title>MainThread`_load_unlocked (5 samples, 4.27%)</title><rect x="282.3" y="485" width="50.4" height="15.0" fill="rgb(248,50,12)" rx="2" ry="2" />
+<text  x="285.31" y="495.5" >MainT..</text>
+</g>
+<g >
+<title>MainThread`_load_unlocked (2 samples, 1.71%)</title><rect x="958.0" y="357" width="20.2" height="15.0" fill="rgb(221,91,4)" rx="2" ry="2" />
+<text  x="961.03" y="367.5" ></text>
+</g>
+<g >
+<title>MainThread`_path_is_mode_type (1 samples, 0.85%)</title><rect x="90.7" y="613" width="10.1" height="15.0" fill="rgb(212,77,35)" rx="2" ry="2" />
+<text  x="93.68" y="623.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_and_load_unlocked (2 samples, 1.71%)</title><rect x="958.0" y="277" width="20.2" height="15.0" fill="rgb(212,22,17)" rx="2" ry="2" />
+<text  x="961.03" y="287.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_and_load (1 samples, 0.85%)</title><rect x="80.6" y="885" width="10.1" height="15.0" fill="rgb(239,133,28)" rx="2" ry="2" />
+<text  x="83.60" y="895.5" ></text>
+</g>
+<g >
+<title>MainThread`_path_stat (1 samples, 0.85%)</title><rect x="1129.5" y="1189" width="10.1" height="15.0" fill="rgb(238,59,27)" rx="2" ry="2" />
+<text  x="1132.49" y="1199.5" ></text>
+</g>
+<g >
+<title>MainThread`find_spec (1 samples, 0.85%)</title><rect x="947.9" y="309" width="10.1" height="15.0" fill="rgb(245,112,37)" rx="2" ry="2" />
+<text  x="950.95" y="319.5" ></text>
+</g>
+<g >
+<title>MainThread`find_spec (1 samples, 0.85%)</title><rect x="796.7" y="1029" width="10.1" height="15.0" fill="rgb(231,139,36)" rx="2" ry="2" />
+<text  x="799.67" y="1039.5" ></text>
+</g>
+<g >
+<title>MainThread`_find_and_load (2 samples, 1.71%)</title><rect x="1119.4" y="1285" width="20.2" height="15.0" fill="rgb(229,134,2)" rx="2" ry="2" />
+<text  x="1122.40" y="1295.5" ></text>
+</g>
+</g>
+</svg>
